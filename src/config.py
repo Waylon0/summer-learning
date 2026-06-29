@@ -13,9 +13,9 @@ TRAIN_PATH = os.path.join(RAW_DATA_DIR, "train.csv")
 TEST_PATH = os.path.join(RAW_DATA_DIR, "test.csv")
 
 BEE_FEATURES = ["honeybee", "bumbles", "andrena", "osmia"]
-UPPER_TEMP_FEATURES = ["MaxOfUpperTRange", "MinOfUpperTRange", "AverageOfUpperTRange"]
-LOWER_TEMP_FEATURES = ["MaxOfLowerTRange", "MinOfLowerTRange", "AverageOfLowerTRange"]
-RAIN_FEATURES = ["RainingDays", "AverageRainingDays"]
+UPPER_TEMP_FEATURES = ["maxofuppertrange", "minofuppertrange", "averageofuppertrange"]
+LOWER_TEMP_FEATURES = ["maxoflowertrange", "minoflowertrange", "averageoflowertrange"]
+RAIN_FEATURES = ["rainingdays", "averagerainingdays"]
 FRUIT_FEATURES = ["fruitset", "fruitmass", "seeds"]
 TARGET = "yield"
 
