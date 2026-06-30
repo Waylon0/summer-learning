@@ -29,13 +29,15 @@ def init_minio_bucket():
 
 
 async def upload_file(file_content: bytes, filename: str, content_type: str) -> str:
+    from io import BytesIO
     client = get_minio_client()
     ext = os.path.splitext(filename)[1]
     object_name = f"invoices/{uuid.uuid4().hex}{ext}"
+    data = BytesIO(file_content)
     client.put_object(
         settings.MINIO_BUCKET,
         object_name,
-        file_content,
+        data,
         length=len(file_content),
         content_type=content_type,
     )

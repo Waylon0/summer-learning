@@ -17,3 +17,9 @@ docker-data/
 data/uploads/*
 !data/uploads/.gitkeep
 backend/data/
+backend/logs/
+infra/redis/redis-server
+infra/redis/redis-cli
+infra/minio/minio
+infra/minio/data/
+infra/pids/
