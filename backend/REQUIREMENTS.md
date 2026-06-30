@@ -136,3 +136,39 @@ alembic ───────────────── 数据库迁移 (独
 | `pymupdf` | 初始设计用于 PDF 发票解析 | OCR 工具为 mock 实现，未实际调用 |
 
 > 若后续实现 RAG 政策检索或真实 PDF 解析，可随时通过 `uv add chromadb langchain-chroma pymupdf` 恢复。
+
+---
+
+## 六、当前安装版本 (uv sync 验证通过)
+
+```
+fastapi              0.138.1
+uvicorn              0.49.0
+sqlalchemy           2.0.51
+asyncpg              0.31.0
+aiosqlite            0.22.1
+alembic              1.18.5
+pydantic             2.13.4
+pydantic-settings    2.14.2
+langchain-core       1.4.8
+langchain-openai     1.3.3
+langgraph            1.2.6
+celery               5.6.3
+redis                6.4.0
+minio                7.2.20
+aiosmtplib           5.1.2
+python-multipart     0.0.32
+reportlab            5.0.0
+loguru               0.7.3
+
+pytest               9.1.1
+pytest-asyncio       1.4.0
+httpx                0.28.1
+```
+
+**验证结果**:
+- 92 个解析包全部安装
+- 15/15 模块导入成功
+- 健康检查: `{"status":"ok","database":"connected"}`
+- 6 个部门预算数据就绪
+- Agent 对话全流程正常
