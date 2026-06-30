@@ -1,3 +1,9 @@
+"""
+=============================================================================
+app/agent/tools/__init__.py — 工具包导出
+=============================================================================
+统一导出所有 Agent 工具函数，方便外部通过 app.agent.tools 一次性导入。
+"""
 from app.agent.tools.reimburse_tools import ALL_TOOLS
 from app.agent.tools.reimburse_tools import (
     ocr_recognize_invoice,
