@@ -13,10 +13,11 @@ from typing import TypedDict, Annotated, Literal
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI
+import json
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from app.core.config import get_settings
-from app.agent.tools import ALL_TOOLS
+from app.agent.tools import ALL_TOOLS, compliance_check, budget_check
 
 settings = get_settings()
 
@@ -61,7 +62,6 @@ def classify_intent(state: ReimburseState) -> dict:
 请以JSON格式输出: {{"intent": "意图类型", "department": "部门", "expense_type": "费用类型", "total_amount": 金额数字}}"""
     response = llm.invoke([HumanMessage(content=prompt)])
     content = response.content
-    import json
     try:
         result = json.loads(content)
     except Exception:
