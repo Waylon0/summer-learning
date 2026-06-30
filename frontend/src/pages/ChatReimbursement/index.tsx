@@ -1,21 +1,116 @@
 import { useState, useRef, useEffect } from 'react';
-import { Card, Input, Button, Space, Upload, Tag, message, Spin } from 'antd';
-import { SendOutlined, UploadOutlined, FileTextOutlined } from '@ant-design/icons';
+import { Card, Input, Button, Space, Upload, Tag, message, Spin, Switch } from 'antd';
+import { SendOutlined, UploadOutlined, FileTextOutlined, LoadingOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
-import { sendChatMessage, uploadInvoice } from '@/services/api';
 import { useAppStore } from '@/stores';
 import type { ChatMessage } from '@/types';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
 export default function ChatReimbursement() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [streamMode, setStreamMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { messages, addMessage, sessionId, setSessionId, clearMessages } = useAppStore();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const uploadFiles = async (): Promise<string[]> => {
+    const attachments: string[] = [];
+    for (const f of fileList) {
+      if (f.originFileObj) {
+        const form = new FormData();
+        form.append('file', f.originFileObj);
+        const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: form });
+        if (res.ok) {
+          const data = await res.json();
+          attachments.push(data.object_name);
+        }
+      }
+    }
+    return attachments;
+  };
+
+  const handleSendNormal = async (userMsg: ChatMessage, attachments: string[]) => {
+    const res = await fetch(`${API_BASE}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: userMsg.content,
+        session_id: sessionId || undefined,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      }),
+    });
+    if (!res.ok) throw new Error('Request failed');
+    const data = await res.json();
+    if (data.session_id) setSessionId(data.session_id);
+    const assistantMsg: ChatMessage = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: data.reply,
+      timestamp: new Date().toISOString(),
+      entities: data.entities,
+    };
+    addMessage(assistantMsg);
+  };
+
+  const handleSendStream = async (userMsg: ChatMessage, attachments: string[]) => {
+    return new Promise<void>((resolve, reject) => {
+      fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userMsg.content,
+          session_id: sessionId || undefined,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) throw new Error('Stream request failed');
+          const reader = res.body?.getReader();
+          if (!reader) throw new Error('No reader');
+
+          const decoder = new TextDecoder();
+          let buffer = '';
+          const assistantMsg: ChatMessage = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString(),
+          };
+          addMessage(assistantMsg);
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const event = JSON.parse(line.slice(6));
+                  if (event.type === 'message') {
+                    assistantMsg.content += event.content;
+                    addMessage({ ...assistantMsg }); // trigger re-render
+                  } else if (event.type === 'done') {
+                    setSessionId(event.session_id);
+                  }
+                } catch {}
+              }
+            }
+          }
+          resolve();
+        })
+        .catch(reject);
+    });
+  };
 
   const handleSend = async () => {
     if (!input.trim() && fileList.length === 0) return;
@@ -29,55 +124,47 @@ export default function ChatReimbursement() {
     addMessage(userMsg);
     setInput('');
     setLoading(true);
+    setStreaming(streamMode);
 
     try {
-      const attachments: string[] = [];
-      for (const f of fileList) {
-        if (f.originFileObj) {
-          const result = await uploadInvoice(f.originFileObj);
-          attachments.push(result.object_name);
-        }
+      const attachments = await uploadFiles();
+      if (streamMode) {
+        await handleSendStream(userMsg, attachments);
+      } else {
+        await handleSendNormal(userMsg, attachments);
       }
-
-      const res = await sendChatMessage({
-        message: userMsg.content,
-        session_id: sessionId || undefined,
-        attachments: attachments.length > 0 ? attachments : undefined,
-      });
-
-      if (res.session_id) setSessionId(res.session_id);
-
-      const assistantMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: res.reply,
-        timestamp: new Date().toISOString(),
-        entities: res.entities,
-      };
-      addMessage(assistantMsg);
       setFileList([]);
     } catch (e) {
-      message.error('请求失败，请重试');
+      message.error('请求失败，请检查后端服务是否启动');
+      console.error(e);
     } finally {
       setLoading(false);
+      setStreaming(false);
     }
   };
 
   return (
     <Card
       title="智能报销对话"
-      extra={<Button size="small" onClick={clearMessages}>清空对话</Button>}
+      extra={
+        <Space>
+          <span style={{ fontSize: 12, color: '#999' }}>SSE流式</span>
+          <Switch size="small" checked={streamMode} onChange={setStreamMode} />
+          <Button size="small" onClick={clearMessages}>清空对话</Button>
+        </Space>
+      }
     >
-      <div style={{ height: 480, overflowY: 'auto', marginBottom: 16, padding: 8 }}>
+      <div style={{ height: 480, overflowY: 'auto', marginBottom: 16, padding: 8, background: '#fafafa', borderRadius: 8 }}>
         {messages.length === 0 && (
           <div style={{ textAlign: 'center', color: '#999', marginTop: 160 }}>
             <FileTextOutlined style={{ fontSize: 48, marginBottom: 16 }} />
-            <p>你好！我是财务报销助手，请描述你的报销需求，或上传票据文件。</p>
+            <p>你好！我是财务报销助手。</p>
+            <p style={{ fontSize: 12 }}>试试说：我要报销差旅费 1500 元，部门技术部</p>
           </div>
         )}
-        {messages.map((msg) => (
+        {messages.map((msg, idx) => (
           <div
-            key={msg.id}
+            key={msg.id || idx}
             style={{
               marginBottom: 16,
               textAlign: msg.role === 'user' ? 'right' : 'left',
@@ -89,13 +176,16 @@ export default function ChatReimbursement() {
                 maxWidth: '80%',
                 padding: '10px 16px',
                 borderRadius: 12,
-                backgroundColor: msg.role === 'user' ? '#1677ff' : '#f0f0f0',
+                backgroundColor: msg.role === 'user' ? '#1677ff' : '#e6f4ff',
                 color: msg.role === 'user' ? '#fff' : '#000',
                 textAlign: 'left',
                 whiteSpace: 'pre-wrap',
               }}
             >
               {msg.content}
+              {streaming && msg.role === 'assistant' && idx === messages.length - 1 && (
+                <LoadingOutlined style={{ marginLeft: 8 }} spin />
+              )}
             </div>
             {msg.entities && msg.role === 'assistant' && (
               <div style={{ marginTop: 4 }}>
@@ -108,11 +198,6 @@ export default function ChatReimbursement() {
             )}
           </div>
         ))}
-        {loading && (
-          <div style={{ textAlign: 'center' }}>
-            <Spin size="small" /> 处理中...
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 

@@ -1,10 +1,13 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from loguru import logger
+import sys
+import os
 
 
 class Settings(BaseSettings):
     APP_NAME: str = "ReimburseAgent"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = "0.2.0"
     DEBUG: bool = False
 
     DATABASE_URL: str = "postgresql+asyncpg://reimburse:reimburse123@localhost:5432/reimburse_db"
@@ -31,8 +34,9 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "noreply@company.com"
 
     CHROMA_PERSIST_DIR: str = "./data/chroma"
-
     UPLOAD_DIR: str = "./data/uploads"
+
+    LOG_LEVEL: str = "INFO"
 
     model_config = {
         "env_file": ".env",
@@ -43,3 +47,20 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
+
+def setup_logging():
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level=get_settings().LOG_LEVEL,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+    )
+    logger.add(
+        "logs/reimburse_{time:YYYY-MM-DD}.log",
+        rotation="10 MB",
+        retention="7 days",
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+    )
+    return logger

@@ -16,3 +16,4 @@ logs/
 docker-data/
 data/uploads/*
 !data/uploads/.gitkeep
+backend/data/

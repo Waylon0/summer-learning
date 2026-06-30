@@ -2,10 +2,10 @@ import os
 import uuid
 from minio import Minio
 from minio.error import S3Error
+from loguru import logger
 from app.core.config import get_settings
 
 settings = get_settings()
-
 _client: Minio | None = None
 
 
@@ -18,9 +18,14 @@ def get_minio_client() -> Minio:
             secret_key=settings.MINIO_SECRET_KEY,
             secure=settings.MINIO_SECURE,
         )
-        if not _client.bucket_exists(settings.MINIO_BUCKET):
-            _client.make_bucket(settings.MINIO_BUCKET)
     return _client
+
+
+def init_minio_bucket():
+    client = get_minio_client()
+    if not client.bucket_exists(settings.MINIO_BUCKET):
+        client.make_bucket(settings.MINIO_BUCKET)
+        logger.info(f"Created MinIO bucket: {settings.MINIO_BUCKET}")
 
 
 async def upload_file(file_content: bytes, filename: str, content_type: str) -> str:
@@ -34,6 +39,7 @@ async def upload_file(file_content: bytes, filename: str, content_type: str) -> 
         length=len(file_content),
         content_type=content_type,
     )
+    logger.info(f"Uploaded: {object_name} ({len(file_content)} bytes)")
     return object_name
 
 
