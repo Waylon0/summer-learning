@@ -24,4 +24,5 @@ infra/minio/minio
 infra/minio/data/
 infra/pids/
 infra/dump.rdb
+infra/redis/data/
 infra/*.tar.gz
