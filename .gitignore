@@ -23,3 +23,5 @@ infra/redis/redis-cli
 infra/minio/minio
 infra/minio/data/
 infra/pids/
+infra/dump.rdb
+infra/*.tar.gz
