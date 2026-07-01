@@ -1,4 +1,4 @@
-"""Global configuration constants and logging setup."""
+"""全局配置常量与日志系统设置。"""
 
 import logging
 import os
@@ -17,11 +17,12 @@ TRAIN_PATH = os.path.join(RAW_DATA_DIR, "train.csv")
 TEST_PATH = os.path.join(RAW_DATA_DIR, "test.csv")
 PREDICTION_PATH = os.path.join(OUTPUTS_DIR, "predictions.csv")
 
-BEE_FEATURES = ["honeybee", "bumbles", "andrena", "osmia"]
-UPPER_TEMP_FEATURES = ["maxofuppertrange", "minofuppertrange", "averageofuppertrange"]
-LOWER_TEMP_FEATURES = ["maxoflowertrange", "minoflowertrange", "averageoflowertrange"]
-RAIN_FEATURES = ["rainingdays", "averagerainingdays"]
-FRUIT_FEATURES = ["fruitset", "fruitmass", "seeds"]
+# 特征分组
+BEE_FEATURES = ["honeybee", "bumbles", "andrena", "osmia"]          # 蜂群密度
+UPPER_TEMP_FEATURES = ["maxofuppertrange", "minofuppertrange", "averageofuppertrange"]   # 最高温带
+LOWER_TEMP_FEATURES = ["maxoflowertrange", "minoflowertrange", "averageoflowertrange"]   # 最低温带
+RAIN_FEATURES = ["rainingdays", "averagerainingdays"]                # 降雨
+FRUIT_FEATURES = ["fruitset", "fruitmass", "seeds"]                  # 果实指标
 TARGET = "yield"
 
 NUMERIC_FEATURES = (
@@ -33,6 +34,7 @@ NUMERIC_FEATURES = (
     + FRUIT_FEATURES
 )
 
+# 建模参数
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 CV_FOLDS = 5
@@ -42,12 +44,25 @@ CLUSTER_K_RANGE = range(2, 11)
 RF_N_ESTIMATORS = 200
 XGB_N_ESTIMATORS = 300
 
+# 确保输出目录存在
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
+    """配置并返回项目日志记录器。
+
+    Parameters
+    ----------
+    level : int
+        日志级别，默认 INFO。
+
+    Returns
+    -------
+    logging.Logger
+        配置好的日志记录器实例。
+    """
     logger = logging.getLogger("blueberry")
     logger.setLevel(level)
     if not logger.handlers:

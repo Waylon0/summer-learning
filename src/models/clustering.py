@@ -1,4 +1,4 @@
-"""K-Means clustering for wild blueberry yield segmentation."""
+"""K-Means 聚类：应用于野生蓝莓产量场景分组。"""
 
 import logging
 
@@ -17,9 +17,16 @@ logger = logging.getLogger("blueberry")
 
 
 class BlueberryClustering:
-    """K-Means clustering with optimal K selection and business-oriented profiling."""
+    """K-Means 聚类，支持最优 K 值自动选择与面向业务解读的聚类画像。"""
 
     def __init__(self, random_state: int = RANDOM_STATE):
+        """初始化聚类器。
+
+        Parameters
+        ----------
+        random_state : int
+            随机种子，确保结果可复现。
+        """
         self.random_state = random_state
         self.model: KMeans | None = None
         self.labels: np.ndarray | None = None
@@ -31,20 +38,21 @@ class BlueberryClustering:
         X: pd.DataFrame,
         k_range: range | None = None,
     ) -> dict:
-        """Evaluate K-Means for a range of K values using four metrics.
+        """在指定的 K 值范围内，用四种指标评估最佳的聚类数。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Scaled feature matrix.
+            标准化后的特征矩阵。
         k_range : range
-            Range of K values to try. Default range(2, 11).
+            K 的取值范围，默认 range(2, 11)。
 
         Returns
         -------
         dict
-            Keys: k_range, inertias, silhouette_scores, davies_bouldin_scores,
-            calinski_harabasz_scores, best_k, optimal_metrics.
+            包含 k_range、inertias、silhouette_scores、
+            davies_bouldin_scores、calinski_harabasz_scores、
+            best_k、optimal_metrics。
         """
         if k_range is None:
             k_range = range(2, 11)
@@ -81,14 +89,14 @@ class BlueberryClustering:
         return results
 
     def fit(self, X: pd.DataFrame, k: int):
-        """Fit K-Means with the specified K.
+        """使用指定的 K 值训练 K-Means。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Scaled feature matrix.
+            标准化后的特征矩阵。
         k : int
-            Number of clusters.
+            聚类数。
 
         Returns
         -------
@@ -97,21 +105,21 @@ class BlueberryClustering:
         self.k = k
         self.model = KMeans(n_clusters=k, random_state=self.random_state, n_init=10)
         self.labels = self.model.fit_predict(X)
-        logger.info("K-Means fitted with K=%d", k)
+        logger.info("K-Means 训练完成，K=%d", k)
         return self
 
     def get_cluster_stats(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Return per-cluster mean and std for all features.
+        """返回每个聚类在各特征上的均值和标准差。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Scaled feature matrix.
+            标准化后的特征矩阵。
 
         Returns
         -------
         pd.DataFrame
-            Multi-level columns: (feature, mean) and (feature, std).
+            多层列索引：(特征, mean) 和 (特征, std)。
         """
         X_with_labels = X.copy()
         X_with_labels["cluster"] = self.labels
@@ -120,19 +128,20 @@ class BlueberryClustering:
     def get_cluster_profiles(
         self, X: pd.DataFrame, y: pd.Series | None = None
     ) -> pd.DataFrame:
-        """Return business-oriented cluster profiles with yield statistics.
+        """返回面向业务解读的聚类画像，含产量统计。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Original (unscaled) feature matrix for interpretable profiles.
+            原始（未缩放）特征矩阵，使画像值可解释。
         y : pd.Series or None
-            Yield values for computing cluster-level yield stats.
+            产量列，用于计算聚类级别的产量统计。
 
         Returns
         -------
         pd.DataFrame
-            Per-cluster summary with count, mean yield, and key feature means.
+            每聚类一行，包含样本数、占比、产量均值/标准差/最小/最大、
+            以及各特征的聚类均值。按产量降序排列。
         """
         profiles = pd.DataFrame({"cluster": self.labels})
         profiles["count"] = 1
@@ -152,17 +161,17 @@ class BlueberryClustering:
         return profiles.round(3)
 
     def get_radar_data(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Prepare normalized per-cluster feature means for radar visualization.
+        """为雷达图准备归一化后的聚类特征均值数据。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Original (unscaled) feature matrix.
+            原始（未缩放）特征矩阵。
 
         Returns
         -------
         pd.DataFrame
-            Per-cluster means normalized to [0, 1] across clusters.
+            每行一个聚类，每列一个特征，值归一化到 [0, 1] 区间。
         """
         profile = X.copy()
         profile["cluster"] = self.labels
@@ -174,11 +183,11 @@ class BlueberryClustering:
         return normalized
 
     def get_predictions(self) -> np.ndarray:
-        """Return cluster labels for all samples.
+        """返回所有样本的聚类标签。
 
         Returns
         -------
         np.ndarray
-            Cluster assignment array.
+            聚类标签数组。
         """
         return self.labels

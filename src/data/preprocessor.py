@@ -1,4 +1,4 @@
-"""Data preprocessing: cleaning, scaling, splitting."""
+"""数据预处理：清洗、标准化、训练/验证集划分。"""
 
 import logging
 
@@ -13,25 +13,32 @@ logger = logging.getLogger("blueberry")
 
 
 class DataPreprocessor:
-    """Handles data inspection, cleaning, scaling, and train/val splitting."""
+    """数据预处理器：数据探查、清洗、标准化、划分。"""
 
     def __init__(self, random_state: int = RANDOM_STATE):
+        """初始化预处理器。
+
+        Parameters
+        ----------
+        random_state : int
+            随机种子，确保结果可复现。
+        """
         self.random_state = random_state
         self.scaler = StandardScaler()
         self.feature_names: list[str] | None = None
 
     def inspect(self, df: pd.DataFrame) -> dict:
-        """Return summary statistics of the dataframe.
+        """返回数据集的汇总统计信息。
 
         Parameters
         ----------
         df : pd.DataFrame
-            Input dataframe.
+            待探查的数据框。
 
         Returns
         -------
         dict
-            Keys: shape, dtypes, missing, duplicated, describe.
+            包含 shape、dtypes、missing、duplicated、describe 等键。
         """
         return {
             "shape": df.shape,
@@ -42,26 +49,26 @@ class DataPreprocessor:
         }
 
     def clean(self, df: pd.DataFrame, drop_id: bool = True) -> pd.DataFrame:
-        """Drop duplicates and optionally the 'id' column.
+        """删除重复行，并可选择删除 id 列。
 
         Parameters
         ----------
         df : pd.DataFrame
-            Input dataframe.
+            待清洗的数据框。
         drop_id : bool
-            Whether to drop the 'id' column.
+            是否删除 id 列，默认 True。
 
         Returns
         -------
         pd.DataFrame
-            Cleaned dataframe.
+            清洗后的数据框。
         """
         df = df.copy()
         n_before = len(df)
         df.drop_duplicates(inplace=True)
         n_dup = n_before - len(df)
         if n_dup > 0:
-            logger.info("Removed %d duplicate rows", n_dup)
+            logger.info("已删除 %d 行重复数据", n_dup)
         if drop_id and "id" in df.columns:
             df.drop(columns=["id"], inplace=True)
         return df
@@ -69,36 +76,36 @@ class DataPreprocessor:
     def split_features_target(
         self, df: pd.DataFrame
     ) -> tuple[pd.DataFrame, pd.Series | None]:
-        """Split dataframe into feature matrix X and target vector y.
+        """拆分为特征矩阵 X 和目标向量 y。
 
         Parameters
         ----------
         df : pd.DataFrame
-            Dataframe containing feature columns and optionally the target.
+            包含特征列和（可选的）目标列的数据框。
 
         Returns
         -------
         tuple
-            (X, y) where y is None if TARGET column is absent (test data).
+            (X, y)。若目标列不存在（如测试集），则 y 为 None。
         """
         X = df[NUMERIC_FEATURES].copy()
         y = df[TARGET].copy() if TARGET in df.columns else None
         return X, y
 
     def scale(self, X: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
-        """Apply StandardScaler to features.
+        """使用 StandardScaler 进行标准化。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Feature matrix.
+            特征矩阵。
         fit : bool
-            If True, call fit_transform; otherwise transform only.
+            若为 True 则调用 fit_transform，否则仅调用 transform。
 
         Returns
         -------
         pd.DataFrame
-            Scaled features with preserved column names and index.
+            标准化后的特征，保留原始列名和索引。
         """
         self.feature_names = list(X.columns)
         if fit:
@@ -110,39 +117,39 @@ class DataPreprocessor:
     def train_val_split(
         self, X: pd.DataFrame, y: pd.Series
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-        """Split data into training and validation sets.
+        """划分为训练集和验证集。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Feature matrix.
+            特征矩阵。
         y : pd.Series
-            Target vector.
+            目标向量。
 
         Returns
         -------
         tuple
-            (X_train, X_val, y_train, y_val).
+            (X_train, X_val, y_train, y_val)。
         """
         return train_test_split(
             X, y, test_size=TEST_SIZE, random_state=self.random_state
         )
 
     def pipeline(self, df: pd.DataFrame, drop_id: bool = True):
-        """Run full preprocessing pipeline.
+        """执行完整预处理流水线。
 
         Parameters
         ----------
         df : pd.DataFrame
-            Raw dataframe.
+            原始数据框。
         drop_id : bool
-            Whether to drop the 'id' column.
+            是否删除 id 列。
 
         Returns
         -------
         tuple
-            (X_train, X_val, y_train, y_val) if target present,
-            otherwise (X_scaled, None).
+            若含目标列则返回 (X_train, X_val, y_train, y_val)，
+            否则返回 (X_scaled, None)。
         """
         df_clean = self.clean(df, drop_id=drop_id)
         X, y = self.split_features_target(df_clean)

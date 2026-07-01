@@ -1,4 +1,4 @@
-"""Model evaluation: metrics, cross-validation, model comparison."""
+"""模型评估：综合指标计算、交叉验证、模型对比。"""
 
 import logging
 
@@ -16,19 +16,19 @@ logger = logging.getLogger("blueberry")
 
 
 def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    """Compute comprehensive regression metrics.
+    """计算全面的回归评估指标。
 
     Parameters
     ----------
     y_true : np.ndarray
-        Ground truth values.
+        真实值。
     y_pred : np.ndarray
-        Predicted values.
+        预测值。
 
     Returns
     -------
     dict
-        Keys: r2, rmse, mae, mape, explained_variance.
+        包含 r2、rmse、mae、mape、explained_variance。
     """
     denom = np.where(np.abs(y_true) < 1e-8, 1.0, y_true)
     return {
@@ -47,25 +47,25 @@ def cross_validate(
     cv: int = 5,
     scoring: str = "r2",
 ) -> dict[str, float]:
-    """Run k-fold cross-validation.
+    """执行 k 折交叉验证。
 
     Parameters
     ----------
     model : estimator
-        Scikit-learn compatible model.
+        已训练的 sklearn 兼容模型。
     X : pd.DataFrame
-        Feature matrix.
+        特征矩阵。
     y : pd.Series
-        Target vector.
+        目标向量。
     cv : int
-        Number of folds.
+        折数。
     scoring : str
-        Scoring metric name.
+        评分指标名称。
 
     Returns
     -------
     dict
-        Keys: cv_mean (mean score), cv_std (std), cv_scores (list of per-fold scores).
+        包含 cv_mean（均值）、cv_std（标准差）、cv_scores（各折得分列表）。
     """
     scores = cross_val_score(model, X, y, cv=cv, scoring=scoring, n_jobs=-1)
     result = {
@@ -73,39 +73,39 @@ def cross_validate(
         "cv_std": float(scores.std()),
         "cv_scores": [float(s) for s in scores],
     }
-    logger.info("CV %d-fold %s: %.4f +/- %.4f", cv, scoring, result["cv_mean"], result["cv_std"])
+    logger.info("CV %d折 %s: %.4f +/- %.4f", cv, scoring, result["cv_mean"], result["cv_std"])
     return result
 
 
 def compare_models(results: dict[str, dict[str, float]]) -> pd.DataFrame:
-    """Create a comparison table of model results.
+    """创建模型结果对比表。
 
     Parameters
     ----------
     results : dict
-        {model_name: {metric_name: value}}.
+        {模型名称: {指标名: 值}}。
 
     Returns
     -------
     pd.DataFrame
-        Rows = models, columns = metrics. Rounded to 4 decimals.
+        行=模型，列=指标。保留 4 位小数。
     """
     df = pd.DataFrame(results).T
     return df.round(4)
 
 
 def summarize_models(results: dict[str, dict[str, float]]) -> pd.DataFrame:
-    """Rank models by RMSE and return ordered comparison.
+    """按 RMSE 升序排列模型对比表。
 
     Parameters
     ----------
     results : dict
-        {model_name: {metric_name: value}}.
+        {模型名称: {指标名: 值}}。
 
     Returns
     -------
     pd.DataFrame
-        Sorted by RMSE ascending.
+        按 RMSE 升序排列。
     """
     df = compare_models(results)
     if "rmse" in df.columns:

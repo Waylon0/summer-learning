@@ -1,4 +1,4 @@
-"""Feature engineering: PCA, polynomial, interaction, log transforms, outlier removal."""
+"""特征工程：PCA 降维、多项式、交互项、对数变换、异常值处理。"""
 
 import numpy as np
 import pandas as pd
@@ -9,21 +9,21 @@ from sklearn.decomposition import PCA
 def add_polynomial_features(
     X: pd.DataFrame, columns: list[str], degree: int = 2
 ) -> pd.DataFrame:
-    """Add polynomial (power) terms for specified columns.
+    """为指定列添加多项式（幂）特征。
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix.
+        特征矩阵。
     columns : list[str]
-        Columns to generate polynomial terms for.
+        需生成多项式项的列名列表。
     degree : int
-        Maximum polynomial degree (>=2).
+        最高多项式次数（>=2）。
 
     Returns
     -------
     pd.DataFrame
-        Augmented feature matrix.
+        扩充后的特征矩阵。
     """
     X = X.copy()
     for col in columns:
@@ -35,19 +35,19 @@ def add_polynomial_features(
 def add_interaction_features(
     X: pd.DataFrame, pairs: list[tuple[str, str]]
 ) -> pd.DataFrame:
-    """Add pairwise interaction (product) features.
+    """添加两两特征交互（乘积）项。
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix.
+        特征矩阵。
     pairs : list[tuple[str, str]]
-        List of (col_a, col_b) pairs.
+        交互对列表，每项为 (列名A, 列名B)。
 
     Returns
     -------
     pd.DataFrame
-        Augmented feature matrix.
+        扩充后的特征矩阵。
     """
     X = X.copy()
     for a, b in pairs:
@@ -56,19 +56,19 @@ def add_interaction_features(
 
 
 def add_log_features(X: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    """Add log-transformed features with shift for non-positive values.
+    """为非正值自动平移后取对数的特征。
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix.
+        特征矩阵。
     columns : list[str]
-        Columns to log-transform.
+        需对数变换的列名。
 
     Returns
     -------
     pd.DataFrame
-        Augmented feature matrix.
+        扩充后的特征矩阵。
     """
     X = X.copy()
     for col in columns:
@@ -81,21 +81,21 @@ def add_log_features(X: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
 def remove_outliers_zscore(
     X: pd.DataFrame, columns: list[str], threshold: float = 3.0
 ) -> pd.DataFrame:
-    """Remove rows where any specified column exceeds z-score threshold.
+    """删除指定列中 z-score 超过阈值的异常行。
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix.
+        特征矩阵。
     columns : list[str]
-        Columns to check for outliers.
+        需检测异常值的列。
     threshold : float
-        Z-score cutoff. Default 3.0.
+        z-score 阈值，默认 3.0。
 
     Returns
     -------
     pd.DataFrame
-        Filtered dataframe.
+        剔除异常值后的数据框。
     """
     mask = pd.Series(True, index=X.index)
     for col in columns:
@@ -108,21 +108,21 @@ def apply_pca(
     n_components: int | None = None,
     variance_threshold: float = 0.95,
 ) -> tuple[pd.DataFrame, PCA, np.ndarray]:
-    """Apply PCA dimensionality reduction.
+    """应用 PCA 降维。
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix.
+        特征矩阵。
     n_components : int or None
-        Fixed number of components. If None, variance_threshold is used.
+        固定主成分数。若为 None 则按方差阈值自动选择。
     variance_threshold : float
-        Fraction of variance to retain (0 < threshold <= 1).
+        保留方差比例（0 < threshold <= 1）。
 
     Returns
     -------
     tuple
-        (X_pca dataframe, fitted PCA object, explained_variance_ratio array).
+        (X_pca 数据框, 训练好的 PCA 对象, 各成分解释方差比数组)。
     """
     if n_components is None:
         pca = PCA(n_components=variance_threshold, random_state=42)
@@ -141,21 +141,21 @@ def apply_pca(
 def add_cluster_features(
     X: pd.DataFrame, labels: np.ndarray, agg_funcs: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Add cluster-based aggregate features (centroid distances, etc.).
+    """基于聚类标签添加聚类偏差特征（各样本距其所在聚类中心的偏差）。
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix (scaled).
+        特征矩阵（已标准化）。
     labels : np.ndarray
-        Cluster labels for each row.
+        各样本的聚类标签。
     agg_funcs : list[str] or None
-        Aggregation functions for cluster profiles.
+        聚类聚合函数（当前仅使用 mean）。
 
     Returns
     -------
     pd.DataFrame
-        Augmented feature matrix with cluster-based features.
+        扩充后的特征矩阵，新增 {列名}_cluster_dev 特征。
     """
     X_out = X.copy()
     X_out["_cluster"] = labels

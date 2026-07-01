@@ -1,4 +1,4 @@
-"""Random Forest regression with grid/random search tuning."""
+"""随机森林回归，支持网格搜索/随机搜索超参数调优。"""
 
 import logging
 
@@ -14,14 +14,22 @@ logger = logging.getLogger("blueberry")
 
 
 def _safe_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """安全计算 MAPE。"""
     denom = np.where(np.abs(y_true) < 1e-8, 1.0, y_true)
     return float(np.mean(np.abs((y_true - y_pred) / denom)) * 100)
 
 
 class BlueberryRandomForest:
-    """Random Forest regressor with optional hyperparameter tuning."""
+    """随机森林回归器，支持可选的超参数搜索。"""
 
     def __init__(self, random_state: int = RANDOM_STATE):
+        """初始化随机森林模型。
+
+        Parameters
+        ----------
+        random_state : int
+            随机种子。
+        """
         self.random_state = random_state
         self.model: RandomForestRegressor | None = None
         self.best_params: dict | None = None
@@ -37,26 +45,26 @@ class BlueberryRandomForest:
         max_features: str = "sqrt",
         n_jobs: int = -1,
     ):
-        """Fit a Random Forest model.
+        """训练随机森林模型。
 
         Parameters
         ----------
         X_train : pd.DataFrame
-            Training features.
+            训练特征。
         y_train : pd.Series
-            Training target.
+            训练目标。
         n_estimators : int
-            Number of trees.
+            决策树数量。
         max_depth : int or None
-            Maximum tree depth.
+            最大树深。
         min_samples_split : int
-            Minimum samples to split a node.
+            节点分裂最小样本数。
         min_samples_leaf : int
-            Minimum samples per leaf.
+            叶节点最小样本数。
         max_features : str
-            Feature selection strategy.
+            特征选择策略。
         n_jobs : int
-            Parallel jobs (-1 = all cores).
+            并行线程数（-1 表示全部核）。
 
         Returns
         -------
@@ -72,7 +80,7 @@ class BlueberryRandomForest:
             n_jobs=n_jobs,
         )
         self.model.fit(X_train, y_train)
-        logger.info("RandomForest fitted: %d trees", n_estimators)
+        logger.info("随机森林训练完成，%d 棵树", n_estimators)
         return self
 
     def grid_search(
@@ -84,27 +92,27 @@ class BlueberryRandomForest:
         n_jobs: int = -1,
         verbose: int = 0,
     ):
-        """Run GridSearchCV for hyperparameter optimization.
+        """通过 GridSearchCV 查找最优超参数。
 
         Parameters
         ----------
         X_train : pd.DataFrame
-            Training features.
+            训练特征。
         y_train : pd.Series
-            Training target.
+            训练目标。
         param_grid : dict or None
-            Parameter grid. Defaults to a predefined grid.
+            参数搜索空间，默认使用预定义网格。
         cv : int
-            Number of CV folds.
+            交叉验证折数。
         n_jobs : int
-            Parallel jobs.
+            并行线程数。
         verbose : int
-            Verbosity level.
+            日志详细程度。
 
         Returns
         -------
         dict
-            Cross-validation results dict from sklearn.
+            sklearn.cv_results_ 字典。
         """
         if param_grid is None:
             param_grid = {
@@ -122,8 +130,8 @@ class BlueberryRandomForest:
         search.fit(X_train, y_train)
         self.best_params = search.best_params_
         self.model = search.best_estimator_
-        logger.info("GridSearchCV best params: %s", self.best_params)
-        logger.info("GridSearchCV best score: %.4f", search.best_score_)
+        logger.info("GridSearchCV 最优参数: %s", self.best_params)
+        logger.info("GridSearchCV 最优得分: %.4f", search.best_score_)
         return search.cv_results_
 
     def randomized_search(
@@ -135,27 +143,27 @@ class BlueberryRandomForest:
         cv: int = CV_FOLDS,
         n_jobs: int = -1,
     ):
-        """Run RandomizedSearchCV for faster hyperparameter exploration.
+        """通过 RandomizedSearchCV 快速探索超参数空间。
 
         Parameters
         ----------
         X_train : pd.DataFrame
-            Training features.
+            训练特征。
         y_train : pd.Series
-            Training target.
+            训练目标。
         param_dist : dict or None
-            Parameter distributions.
+            参数分布。
         n_iter : int
-            Number of random combinations to try.
+            随机搜索组合数。
         cv : int
-            CV folds.
+            交叉验证折数。
         n_jobs : int
-            Parallel jobs.
+            并行线程数。
 
         Returns
         -------
         dict
-            CV results.
+            sklearn.cv_results_ 字典。
         """
         if param_dist is None:
             param_dist = {
@@ -174,41 +182,41 @@ class BlueberryRandomForest:
         search.fit(X_train, y_train)
         self.best_params = search.best_params_
         self.model = search.best_estimator_
-        logger.info("RandomizedSearchCV best params: %s", self.best_params)
-        logger.info("RandomizedSearchCV best score: %.4f", search.best_score_)
+        logger.info("RandomizedSearchCV 最优参数: %s", self.best_params)
+        logger.info("RandomizedSearchCV 最优得分: %.4f", search.best_score_)
         return search.cv_results_
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate predictions.
+        """生成预测值。
 
         Parameters
         ----------
         X : pd.DataFrame
-            Features.
+            待预测的特征矩阵。
 
         Returns
         -------
         np.ndarray
-            Predicted yield.
+            预测产量数组。
         """
         return self.model.predict(X)
 
     def evaluate(
         self, y_true: np.ndarray, y_pred: np.ndarray
     ) -> dict[str, float]:
-        """Compute regression metrics.
+        """计算回归评估指标。
 
         Parameters
         ----------
         y_true : np.ndarray
-            Ground truth.
+            真实值。
         y_pred : np.ndarray
-            Predictions.
+            预测值。
 
         Returns
         -------
         dict
-            Keys: r2, rmse, mae, mape.
+            包含 r2、rmse、mae、mape。
         """
         return {
             "r2": float(r2_score(y_true, y_pred)),
@@ -218,17 +226,17 @@ class BlueberryRandomForest:
         }
 
     def get_feature_importance(self, feature_names: list[str]) -> pd.DataFrame:
-        """Return feature importance table sorted descending.
+        """返回按重要性降序排列的特征重要性表。
 
         Parameters
         ----------
         feature_names : list[str]
-            Feature names matching importance order.
+            特征名列表。
 
         Returns
         -------
         pd.DataFrame
-            Columns: feature, importance.
+            列：feature、importance。
         """
         imp_df = pd.DataFrame({
             "feature": feature_names,
