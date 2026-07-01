@@ -3,7 +3,8 @@ import { Card, Input, Button, Space, Upload, Tag, message, Spin, Switch } from '
 import { SendOutlined, UploadOutlined, FileTextOutlined, LoadingOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import { useAppStore } from '@/stores';
-import type { ChatMessage } from '@/types';
+import { uploadInvoice } from '@/services/api';
+import type { ChatMessage, SSEEvent } from '@/types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -14,111 +15,104 @@ export default function ChatReimbursement() {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [streamMode, setStreamMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { messages, addMessage, sessionId, setSessionId, clearMessages } = useAppStore();
+  const {
+    messages, addMessage, appendToLastAssistant,
+    setLastAssistantEntities, sessionId, setSessionId, clearMessages,
+  } = useAppStore();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const uploadFiles = async (): Promise<string[]> => {
-    const attachments: string[] = [];
-    for (const f of fileList) {
-      if (f.originFileObj) {
-        const form = new FormData();
-        form.append('file', f.originFileObj);
-        const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: form });
-        if (res.ok) {
-          const data = await res.json();
-          attachments.push(data.object_name);
-        }
-      }
-    }
-    return attachments;
+    const results = await Promise.all(
+      fileList
+        .filter((f) => f.originFileObj)
+        .map((f) => uploadInvoice(f.originFileObj!))
+    );
+    return results.map((r) => r.object_name);
   };
 
-  const handleSendNormal = async (userMsg: ChatMessage, attachments: string[]) => {
+  const buildRequestBody = (userContent: string, attachments: string[]) => ({
+    message: userContent,
+    session_id: sessionId || undefined,
+    attachments: attachments.length > 0 ? attachments : undefined,
+  });
+
+  const handleSendNormal = async (userContent: string, attachments: string[]) => {
     const res = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: userMsg.content,
-        session_id: sessionId || undefined,
-        attachments: attachments.length > 0 ? attachments : undefined,
-      }),
+      body: JSON.stringify(buildRequestBody(userContent, attachments)),
     });
-    if (!res.ok) throw new Error('Request failed');
+    if (!res.ok) throw new Error('请求失败');
     const data = await res.json();
     if (data.session_id) setSessionId(data.session_id);
-    const assistantMsg: ChatMessage = {
+    addMessage({
       id: (Date.now() + 1).toString(),
       role: 'assistant',
       content: data.reply,
       timestamp: new Date().toISOString(),
+      intent: data.intent,
       entities: data.entities,
-    };
-    addMessage(assistantMsg);
+    });
   };
 
-  const handleSendStream = async (userMsg: ChatMessage, attachments: string[]) => {
-    return new Promise<void>((resolve, reject) => {
-      fetch(`${API_BASE}/chat/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userMsg.content,
-          session_id: sessionId || undefined,
-          attachments: attachments.length > 0 ? attachments : undefined,
-        }),
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error('Stream request failed');
-          const reader = res.body?.getReader();
-          if (!reader) throw new Error('No reader');
-
-          const decoder = new TextDecoder();
-          let buffer = '';
-          const assistantMsg: ChatMessage = {
-            id: (Date.now() + 1).toString(),
-            role: 'assistant',
-            content: '',
-            timestamp: new Date().toISOString(),
-          };
-          addMessage(assistantMsg);
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const event = JSON.parse(line.slice(6));
-                  if (event.type === 'message') {
-                    assistantMsg.content += event.content;
-                    addMessage({ ...assistantMsg }); // trigger re-render
-                  } else if (event.type === 'done') {
-                    setSessionId(event.session_id);
-                  }
-                } catch {}
-              }
-            }
-          }
-          resolve();
-        })
-        .catch(reject);
+  const handleSendStream = async (userContent: string, attachments: string[]): Promise<void> => {
+    const res = await fetch(`${API_BASE}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildRequestBody(userContent, attachments)),
     });
+    if (!res.ok) throw new Error('流式请求失败');
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('无法读取流式响应');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event: SSEEvent = JSON.parse(line.slice(6));
+          switch (event.type) {
+            case 'intent':
+              setSessionId(event.session_id || null);
+              setLastAssistantEntities(event.intent);
+              break;
+            case 'message':
+              appendToLastAssistant(event.content || '');
+              break;
+            case 'done':
+              setSessionId(event.session_id || null);
+              break;
+            case 'error':
+              message.error(event.content || '处理异常');
+              break;
+          }
+        } catch {
+          // 忽略非 JSON 行
+        }
+      }
+    }
   };
 
   const handleSend = async () => {
     if (!input.trim() && fileList.length === 0) return;
 
+    const userContent = input || '请识别上传的票据';
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      content: input || '请识别上传的票据',
+      content: userContent,
       timestamp: new Date().toISOString(),
     };
     addMessage(userMsg);
@@ -129,14 +123,15 @@ export default function ChatReimbursement() {
     try {
       const attachments = await uploadFiles();
       if (streamMode) {
-        await handleSendStream(userMsg, attachments);
+        setStreaming(true);
+        await handleSendStream(userContent, attachments);
       } else {
-        await handleSendNormal(userMsg, attachments);
+        await handleSendNormal(userContent, attachments);
       }
       setFileList([]);
     } catch (e) {
-      message.error('请求失败，请检查后端服务是否启动');
-      console.error(e);
+      const msg = e instanceof Error ? e.message : '请求失败，请检查后端服务是否启动';
+      message.error(msg);
     } finally {
       setLoading(false);
       setStreaming(false);
@@ -187,9 +182,10 @@ export default function ChatReimbursement() {
                 <LoadingOutlined style={{ marginLeft: 8 }} spin />
               )}
             </div>
-            {msg.entities && msg.role === 'assistant' && (
+            {(msg.intent || msg.entities) && msg.role === 'assistant' && (
               <div style={{ marginTop: 4 }}>
-                {Object.entries(msg.entities).map(([k, v]) => (
+                {msg.intent && <Tag color="blue">意图: {msg.intent}</Tag>}
+                {msg.entities && Object.entries(msg.entities).map(([k, v]) => (
                   <Tag key={k} style={{ marginBottom: 4 }}>
                     {k}: {String(v)}
                   </Tag>
