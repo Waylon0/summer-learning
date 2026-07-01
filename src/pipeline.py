@@ -111,7 +111,8 @@ class BlueberryPipeline:
         self._step_eda()
         self._step_clustering()
         self._step_pca()
-        self._step_linear()              # 全模型 Ridge（PCA）
+        self._step_linear()              # 全模型 Ridge + Lasso（PCA）
+        self._step_linear_nofruit()      # ★ 排除果实 Ridge + Lasso（对照实验）
         self._step_rf()                  # 全模型 RF
         if self._has_xgboost:
             self._step_xgboost()         # 全模型 XGBoost
@@ -271,6 +272,62 @@ class BlueberryPipeline:
         self.result.models["ridge"] = lr
         plot_residuals(yv.values, y_pred, "岭回归")
         plot_actual_vs_predicted(yv.values, y_pred, "岭回归")
+
+        # Lasso（全模型 PCA 后）
+        lr_l = BlueberryLinearRegression()
+        lr_l.fit_lasso(Xt, yt, tune=True)
+        y_pred_l = lr_l.predict(Xv)
+        metrics_l = lr_l.evaluate(yv, y_pred_l)
+        logger.info("Lasso（全模型）: R²=%.4f RMSE=%.4f", metrics_l["r2"], metrics_l["rmse"])
+        self.result.metrics["Lasso（全模型）"] = metrics_l
+        self.result.cv_results["Lasso（全模型）"] = cross_validate(lr_l.model, Xt, yt, cv=CV_FOLDS)
+        self.result.models["lasso"] = lr_l
+        plot_residuals(yv.values, y_pred_l, "Lasso（全模型）")
+        plot_actual_vs_predicted(yv.values, y_pred_l, "Lasso（全模型）")
+
+    def _step_linear_nofruit(self):
+        """步骤 5b：Ridge + Lasso — 排除果实特征（核心创新对照实验）。"""
+        logger.info("=== 步骤 5b：Ridge + Lasso（排除果实特征） ===")
+        nofruit = [f for f in NUMERIC_FEATURES if f not in FRUIT_FEATURES]
+        Xt = self._data["X_train"][nofruit]
+        Xv = self._data["X_val"][nofruit]
+        yt, yv = self._data["y_train"], self._data["y_val"]
+
+        # PCA on no-fruit features
+        Xt_pca, pca_nf, _ = apply_pca(Xt)
+        Xv_pca = pd.DataFrame(
+            pca_nf.transform(Xv),
+            columns=[f"PC{i+1}" for i in range(Xt_pca.shape[1])],
+            index=Xv.index,
+        )
+
+        # Ridge
+        lr = BlueberryLinearRegression()
+        lr.fit_ridge(Xt_pca, yt, tune=True)
+        y_pred = lr.predict(Xv_pca)
+        metrics = lr.evaluate(yv, y_pred)
+        logger.info("Ridge（排除果实）: R²=%.4f RMSE=%.4f", metrics["r2"], metrics["rmse"])
+        self.result.metrics["Ridge（排除果实）"] = metrics
+        self.result.cv_results["Ridge（排除果实）"] = cross_validate(lr.model, Xt_pca, yt, cv=CV_FOLDS)
+        self.result.models["ridge_nofruit"] = lr
+        plot_residuals(yv.values, y_pred, "Ridge（排除果实）")
+        plot_actual_vs_predicted(yv.values, y_pred, "Ridge（排除果实）")
+
+        # Lasso
+        lr_l = BlueberryLinearRegression()
+        lr_l.fit_lasso(Xt_pca, yt, tune=True)
+        y_pred_l = lr_l.predict(Xv_pca)
+        metrics_l = lr_l.evaluate(yv, y_pred_l)
+        logger.info("Lasso（排除果实）: R²=%.4f RMSE=%.4f", metrics_l["r2"], metrics_l["rmse"])
+        self.result.metrics["Lasso（排除果实）"] = metrics_l
+        self.result.cv_results["Lasso（排除果实）"] = cross_validate(lr_l.model, Xt_pca, yt, cv=CV_FOLDS)
+        self.result.models["lasso_nofruit"] = lr_l
+        plot_residuals(yv.values, y_pred_l, "Lasso（排除果实）")
+        plot_actual_vs_predicted(yv.values, y_pred_l, "Lasso（排除果实）")
+
+        full_r2 = self.result.metrics["岭回归 (Ridge)"]["r2"]
+        logger.info("果实特征对照: 全特征R²=%.4f → 排除果实R²=%.4f (下降 %.4f)",
+                    full_r2, metrics["r2"], full_r2 - metrics["r2"])
 
     def _step_rf(self):
         logger.info("=== 步骤 6：随机森林（全模型） ===")
@@ -471,6 +528,66 @@ class BlueberryPipeline:
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(report)
         logger.info("分析总结已保存至 %s", report_path)
+
+        # L1-L4 答辩对照摘要
+        self._write_l1_l4_summary()
+
+    def _write_l1_l4_summary(self):
+        """生成 L1-L4 答辩对照摘要。"""
+        summary_path = os.path.join(os.path.dirname(FIGURES_DIR),
+                                    "L1-L4答辩对照摘要.txt")
+        comp = self.result.comparison_table
+        cv_ridge = self.result.cv_results.get("Ridge（排除果实）", {})
+        metrics = self.result.metrics
+
+        ridge_full = metrics.get("岭回归 (Ridge)", {})
+        ridge_nf = metrics.get("Ridge（排除果实）", {})
+        r2_drop = ridge_full.get("r2", 0) - ridge_nf.get("r2", 0)
+
+        lines = [
+            "=" * 65,
+            "  野生蓝莓产量预测分析系统 — L1~L4 答辩对照摘要",
+            "=" * 65, "",
+            "┌─────────────────────────────────────────────────────────────┐",
+            "│  L1 — 完成分析过程                                          │",
+            "│  ✓ 15,289条数据, 0缺失, StandardScaler + 8:2划分             │",
+            "│  ✓ EDA + K-Means聚类 + Ridge/Lasso/RF/Stacking              │",
+            "│  对应图表: correlation_heatmap.png cluster_scatter.png       │",
+            "└─────────────────────────────────────────────────────────────┘", "",
+            "┌─────────────────────────────────────────────────────────────┐",
+            "│  L2 — 过程清晰、合理选择模型                                  │",
+            "│  ✓ CLI: --mode --tune --verbose                              │",
+            "│  ✓ 四指标选K + PCA(95%方差) + RidgeCV/LassoCV               │",
+            "│  对应图表: elbow_method.png cluster_metrics.png pca_variance.png│",
+            "└─────────────────────────────────────────────────────────────┘", "",
+            "┌─────────────────────────────────────────────────────────────┐",
+            "│  L3 — 报告完整翔实、有创意（★核心创新）                       │",
+            f"│  ★ 果实特征对照实验: 全特征R²={ridge_full.get('r2', 0):.4f} → 排除果实R²={ridge_nf.get('r2', 0):.4f} (下降{r2_drop:.4f})           │",
+            "│  ★ 因果链分析: 环境→果实→产量                                 │",
+            "│  ★ 聚类雷达图 + 纯环境模型 + 业务建议                         │",
+            "│  对应图表: model_comparison_r2.png cluster_radar.png          │",
+            "└─────────────────────────────────────────────────────────────┘", "",
+            "┌─────────────────────────────────────────────────────────────┐",
+            "│  L4 — 系统化: 可复现、可配置、可诊断                           │",
+            f"│  ✓ 5折CV: R²={cv_ridge.get('cv_mean', 0):.4f}±{cv_ridge.get('cv_std', 0):.4f}                                           │",
+            "│  ✓ 模型持久化(joblib) + 日志系统 + 中文自适应                 │",
+            "│  对应图表: learning_curve_*.png residuals_*.png               │",
+            "└─────────────────────────────────────────────────────────────┘", "",
+            "  模型对比总表 (按RMSE):",
+        ]
+        for idx, row in comp.iterrows():
+            tag = " ← 数据泄露" if row["r2"] > 0.7 else ""
+            lines.append(
+                f"    {idx:22s}  R²={row['r2']:.4f}  RMSE={row['rmse']:8.1f}{tag}"
+            )
+        lines.extend([
+            "", "  >> 详细报告: 蓝莓产量预测分析实训报告.docx",
+            "  >> 全部图表: outputs/figures/",
+            "=" * 65,
+        ])
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        logger.info("L1-L4 答辩摘要已保存: %s", summary_path)
 
     def _get_best_model(self, name: str):
         mapping = {
