@@ -618,3 +618,193 @@ def plot_pca_variance(
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="lower right")
     save(fig, "pca_variance.png")
     return fig
+
+
+# ---------------------------------------------------------- 因果链与中间变量分析
+
+
+def plot_env_fruit_importance(
+    env_importance: dict[str, pd.DataFrame],
+    top_n: int = 8,
+) -> plt.Figure:
+    """并排条形图：环境因素对各果实指标（fruitset/fruitmass/seeds）的影响重要性。
+
+    Parameters
+    ----------
+    env_importance : dict
+        {fruit_name: importance_dataframe}, 来自 IntermediateAnalyzer。
+    top_n : int
+        每个子图展示 Top N 个环境特征。
+
+    Returns
+    -------
+    plt.Figure
+    """
+    n_fruits = len(env_importance)
+    fig, axes = plt.subplots(1, n_fruits, figsize=(6 * n_fruits, 6))
+    if n_fruits == 1:
+        axes = [axes]
+
+    colors = ["steelblue", "coral", "seagreen"]
+    for idx, (fruit, imp) in enumerate(env_importance.items()):
+        ax = axes[idx]
+        top = imp.head(top_n).iloc[::-1]  # 翻转使最大的在顶部
+        ax.barh(range(len(top)), top["importance"].values, color=colors[idx % len(colors)])
+        ax.set_yticks(range(len(top)))
+        ax.set_yticklabels(top["feature"].values, fontsize=9)
+        ax.set_xlabel("重要性")
+        ax.set_title(f"环境因素 → {fruit}")
+
+    fig.suptitle("环境因素对果实发育指标的影响", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    save(fig, "env_to_fruit_importance.png")
+    return fig
+
+
+def plot_env_only_feature_importance(
+    importance: pd.DataFrame,
+    model_name: str = "随机森林（仅环境）",
+    top_n: int = 15,
+) -> plt.Figure:
+    """纯环境因素 → 产量的特征重要性水平条形图。
+
+    Parameters
+    ----------
+    importance : pd.DataFrame
+        特征重要性表（feature + importance 列）。
+    model_name : str
+        模型名称。
+    top_n : int
+        展示 Top N 个特征。
+
+    Returns
+    -------
+    plt.Figure
+    """
+    indices = np.argsort(importance["importance"].values)[::-1][:top_n]
+    top = importance.iloc[indices].iloc[::-1]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.barh(range(len(top)), top["importance"].values, color="steelblue")
+    ax.set_yticks(range(len(top)))
+    ax.set_yticklabels(top["feature"].values)
+    ax.invert_yaxis()
+    ax.set_xlabel("重要性")
+    ax.set_title(f"纯环境因素 → 产量 特征重要性 - {model_name}")
+    fig.tight_layout()
+    save(fig, "env_only_feature_importance.png")
+    return fig
+
+
+def plot_env_vs_full_comparison(
+    env_metrics: dict,
+    full_metrics: dict,
+    env_cv: dict | None = None,
+    full_cv: dict | None = None,
+) -> plt.Figure:
+    """对比纯环境模型与全模型的 R² 和 CV R²。
+
+    Parameters
+    ----------
+    env_metrics : dict
+        纯环境模型指标。
+    full_metrics : dict
+        全模型指标。
+    env_cv : dict or None
+        纯环境模型交叉验证结果。
+    full_cv : dict or None
+        全模型交叉验证结果。
+
+    Returns
+    -------
+    plt.Figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # 左图：R² 对比
+    models = ["纯环境模型", "全模型（含果实指标）"]
+    r2_values = [env_metrics.get("r2", 0), full_metrics.get("r2", 0)]
+    colors = ["steelblue", "coral"]
+    axes[0].bar(models, r2_values, color=colors, edgecolor="white")
+    for i, v in enumerate(r2_values):
+        axes[0].text(i, v + 0.01, f"{v:.4f}", ha="center", fontweight="bold")
+    axes[0].set_ylabel("R²")
+    axes[0].set_title("验证集 R² 对比")
+    axes[0].set_ylim(0, max(r2_values) * 1.15)
+
+    # 右图：CV R² 对比
+    if env_cv and full_cv:
+        cv_models = ["纯环境模型", "全模型"]
+        cv_values = [env_cv.get("cv_mean", 0), full_cv.get("cv_mean", 0)]
+        cv_stds = [env_cv.get("cv_std", 0), full_cv.get("cv_std", 0)]
+        axes[1].bar(cv_models, cv_values, yerr=cv_stds, color=colors,
+                    edgecolor="white", capsize=10, error_kw={"linewidth": 2})
+        for i, (v, s) in enumerate(zip(cv_values, cv_stds)):
+            axes[1].text(i, v + s + 0.005, f"{v:.4f}±{s:.4f}",
+                         ha="center", fontsize=9, fontweight="bold")
+        axes[1].set_ylabel("CV R²")
+        axes[1].set_title("5 折交叉验证 R² 对比")
+
+    fig.suptitle("纯环境模型 vs 全模型：果实指标的中介效应",
+                 fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    save(fig, "env_vs_full_comparison.png")
+    return fig
+
+
+def plot_env_factor_grouped_importance(
+    importance: pd.DataFrame,
+) -> plt.Figure:
+    """按因素大类（温度/降雨/蜂群/克隆株）汇总纯环境模型的影响力占比饼图。
+
+    Parameters
+    ----------
+    importance : pd.DataFrame
+        环境特征重要性表。
+
+    Returns
+    -------
+    plt.Figure
+    """
+    from src.config import BEE_FEATURES, UPPER_TEMP_FEATURES, LOWER_TEMP_FEATURES, RAIN_FEATURES
+
+    groups = {
+        "克隆株大小": ["clonesize"],
+        "蜂群密度": BEE_FEATURES,
+        "最高温带温度": UPPER_TEMP_FEATURES,
+        "最低温带温度": LOWER_TEMP_FEATURES,
+        "降雨": RAIN_FEATURES,
+    }
+
+    grouped = {}
+    for group_name, feats in groups.items():
+        grouped[group_name] = importance.set_index("feature").loc[feats]["importance"].sum()
+
+    total = sum(grouped.values())
+    if total > 0:
+        grouped = {k: v / total for k, v in grouped.items()}
+
+    # 合并温度
+    temp_total = grouped.get("最高温带温度", 0) + grouped.get("最低温带温度", 0)
+    grouped_merged = {
+        "温度因素": temp_total,
+        "蜂群密度": grouped.get("蜂群密度", 0),
+        "降雨": grouped.get("降雨", 0),
+        "克隆株大小": grouped.get("克隆株大小", 0),
+    }
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    labels = list(grouped_merged.keys())
+    sizes = list(grouped_merged.values())
+    colors_pie = ["coral", "gold", "steelblue", "seagreen", "mediumpurple"][:len(labels)]
+
+    wedges, texts, autotexts = ax.pie(
+        sizes, labels=labels, autopct="%1.1f%%",
+        colors=colors_pie, startangle=90,
+        textprops={"fontsize": 11},
+    )
+    for at in autotexts:
+        at.set_fontweight("bold")
+    ax.set_title("纯环境因素 → 产量 影响力占比", fontsize=14, fontweight="bold")
+    save(fig, "env_factor_influence_pie.png")
+    return fig
