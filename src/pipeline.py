@@ -15,11 +15,15 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.analysis.intermediate_analysis import (
-    IntermediateAnalyzer,
-    analyze_environment_to_fruit,
-    generate_env_factor_summary,
-)
+try:
+    from src.analysis.intermediate_analysis import (
+        IntermediateAnalyzer,
+        analyze_environment_to_fruit,
+        generate_env_factor_summary,
+    )
+    _CAUSAL_AVAILABLE = True
+except ImportError:
+    _CAUSAL_AVAILABLE = False
 from src.config import (
     CLUSTER_K_RANGE,
     CV_FOLDS,
@@ -113,7 +117,8 @@ class BlueberryPipeline:
             self._step_xgboost()         # 全模型 XGBoost
         self._step_ensemble()            # Stacking 集成
         self._step_env_only_models()     # ★ 纯环境模型
-        self._step_causal_analysis()     # ★ 因果链分析
+        if _CAUSAL_AVAILABLE:
+            self._step_causal_analysis()     # ★ 因果链分析（需 src/analysis/ 模块）
         self._step_compare()
         self._step_business_insights()
 
