@@ -165,7 +165,10 @@ def plot_distribution(
     if rows is None:
         rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3))
-    axes = axes.flatten()
+    if n == 1:
+        axes = np.array([axes])
+    else:
+        axes = axes.flatten()
     for i, col in enumerate(columns):
         ax = axes[i]
         ax.hist(df[col].dropna(), bins=50, edgecolor="white", alpha=0.7, color="steelblue")
