@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 import warnings
 
 import matplotlib
@@ -11,67 +12,94 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-# ---- 自动检测并使用系统中支持中文的字体 ----
-_CJK_CANDIDATES = [
-    "SimHei",                # Windows 黑体
-    "Microsoft YaHei",       # Windows 微软雅黑
-    "STHeiti",               # macOS
-    "PingFang SC",           # macOS
-    "Heiti SC",              # macOS
-    "WenQuanYi Micro Hei",   # Linux
-    "WenQuanYi Zen Hei",     # Linux
-    "Noto Sans CJK SC",      # Linux
-    "Noto Sans SC",          # Linux
-    "AR PL UMing CN",        # Linux
+# ---- 中文字体配置（多策略自动检测） ----
+
+# 候选字体：(matplotlib 字体名, [可能的文件名列表])
+_CJK_SEARCH = [
+    ("SimHei",           ["simhei.ttf", "SimHei.ttf"]),
+    ("Microsoft YaHei",  ["msyh.ttf", "msyh.ttc", "Microsoft YaHei.ttf"]),
+    ("SimSun",           ["simsun.ttc", "SimSun.ttc"]),
+    ("KaiTi",            ["simkai.ttf", "KaiTi.ttf"]),
+    ("FangSong",         ["simfang.ttf", "FangSong.ttf"]),
+    ("STHeiti",          []),
+    ("PingFang SC",      []),
+    ("WenQuanYi Micro Hei", []),
+    ("Noto Sans CJK SC", []),
 ]
-_FALLBACK_FONT = "DejaVu Sans"
+
+
+def _get_system_font_dirs() -> list[str]:
+    """根据操作系统返回字体目录列表。"""
+    dirs = []
+    if os.name == "nt":
+        wd = os.environ.get("WINDIR", "C:\\Windows")
+        dirs.append(os.path.join(wd, "Fonts"))
+    elif sys.platform == "darwin":
+        dirs.extend(["/System/Library/Fonts", "/Library/Fonts",
+                      os.path.expanduser("~/Library/Fonts")])
+    else:
+        dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts",
+                      os.path.expanduser("~/.fonts")])
+    return dirs
 
 
 def _setup_chinese_font() -> str:
-    """检测并激活系统中支持中文的字体。
+    """配置中文字体，返回实际激活的字体名。"""
+    matplotlib.rcParams["axes.unicode_minus"] = False
 
-    若找到中文字体则使用，否则静默所有 UserWarning 避免 Glyph 刷屏。
-    """
-    # 将系统字体目录加入 matplotlib 搜索路径
-    _extra_dirs = []
-    if os.name == "nt":
-        _windir = os.environ.get("WINDIR", "C:\\Windows")
-        _d = os.path.join(_windir, "Fonts")
-        if os.path.isdir(_d):
-            _extra_dirs.append(_d)
-    elif os.sys.platform == "darwin":
-        _extra_dirs.extend(["/System/Library/Fonts", "/Library/Fonts"])
+    # 策略 1：直接查找已知字体名（最快）
+    existing = {f.name for f in fm.fontManager.ttflist}
+    for name, _ in _CJK_SEARCH:
+        if name in existing:
+            matplotlib.rcParams["font.sans-serif"] = [name, "DejaVu Sans"]
+            matplotlib.rcParams["font.family"] = "sans-serif"
+            return name
 
-    for _d in _extra_dirs:
-        for _f in os.listdir(_d):
-            if _f.lower().endswith((".ttf", ".ttc", ".otf")):
-                try:
-                    fm.fontManager.addfont(os.path.join(_d, _f))
-                except Exception:
-                    pass
+    # 策略 2：在系统字体目录中通过文件名精确查找并注册
+    font_dirs = _get_system_font_dirs()
+    registered = []
 
-    # 扫描已知中文字体
-    available = {f.name for f in fm.fontManager.ttflist}
-    chosen = None
-    for name in _CJK_CANDIDATES:
-        if name in available:
-            chosen = name
-            break
+    for name, filenames in _CJK_SEARCH:
+        for d in font_dirs:
+            if not os.path.isdir(d):
+                continue
+            for fn in filenames:
+                fp = os.path.join(d, fn)
+                if os.path.isfile(fp):
+                    try:
+                        fm.fontManager.addfont(fp)
+                        registered.append((name, fp))
+                    except Exception:
+                        pass
+                    break
+            if any(r[0] == name for r in registered):
+                break
 
-    if chosen:
-        matplotlib.rcParams["font.sans-serif"] = [chosen, _FALLBACK_FONT]
-        matplotlib.rcParams["font.family"] = "sans-serif"
-        matplotlib.rcParams["axes.unicode_minus"] = False
-        return chosen
-    else:
-        matplotlib.rcParams["font.sans-serif"] = [_FALLBACK_FONT]
-        matplotlib.rcParams["axes.unicode_minus"] = False
-        # 全局静默 UserWarning，避免每个图表都输出 Glyph 缺字警告
-        warnings.filterwarnings("ignore", category=UserWarning)
-        return _FALLBACK_FONT
+    if registered:
+        fm._load_fontmanager(try_read_cache=False)
+        available = {f.name for f in fm.fontManager.ttflist}
+        for name, fp in registered:
+            if name in available:
+                matplotlib.rcParams["font.sans-serif"] = [name, "DejaVu Sans"]
+                matplotlib.rcParams["font.family"] = "sans-serif"
+                logging.getLogger("blueberry").info(
+                    "中文字体已激活: %s (%s)", name, fp)
+                return name
+
+    # 策略 3：回退
+    matplotlib.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    matplotlib.rcParams["font.family"] = "sans-serif"
+    warnings.filterwarnings("ignore", message="Glyph.*missing")
+    logging.getLogger("blueberry").warning(
+        "未找到中文字体。图表中文将显示为方框。"
+        "Windows 用户请检查 C:\\Windows\\Fonts\\simhei.ttf 是否存在。")
+    return "DejaVu Sans"
 
 
-_setup_chinese_font()
+_chosen_font = _setup_chinese_font()
+# 二次确认（seaborn 可能重置字体配置）
+matplotlib.rcParams["font.sans-serif"] = [_chosen_font, "DejaVu Sans"]
+matplotlib.rcParams["font.family"] = "sans-serif"
 
 from src.config import FIGURES_DIR
 
