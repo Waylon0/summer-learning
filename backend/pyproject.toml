@@ -28,6 +28,16 @@ dependencies = [
 [project.scripts]
 reimburse = "app.cli:main"
 
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",

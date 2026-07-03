@@ -1502,7 +1502,7 @@ wheels = [
 [[package]]
 name = "reimburse-agent-backend"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiosmtplib" },
     { name = "aiosqlite" },
