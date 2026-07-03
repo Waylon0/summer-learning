@@ -172,18 +172,65 @@ def _extract_amount(text: str) -> float:
 
 
 def _extract_date(text: str) -> str:
-    """提取日期，格式统一为 YYYY-MM-DD"""
-    patterns = [
-        r"(\d{4}[-/年]\d{1,2}[-/月]\d{1,2})[日号]?",   # 2026-06-15 / 2026年6月15日
-        r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})",               # 2026/06/15
+    """
+    从文本中提取日期，格式统一为 YYYY-MM-DD。
+
+    支持格式（按优先级）:
+      - "2026-06-15" / "2026-6-15" / "2026/06/15"    完整日期
+      - "2026年6月15日" / "2026年06月15日"             中文日期
+      - "6月15日" / "06月15日"                         缺少年份（默认当前年）
+      - "6月15号" / "6.15" / "6/15"                   简写格式
+      - "2026-06"                                      年月（默认1日）
+      - "昨天" / "今天" / "明天" / "前天" / "后天"      相对日期
+    """
+    import datetime
+
+    text = text.strip()
+
+    # ===== 相对日期 =====
+    today = datetime.date.today()
+    relative_map = {
+        "今天": today, "今日": today,
+        "昨天": today - datetime.timedelta(days=1), "昨日": today - datetime.timedelta(days=1),
+        "明天": today + datetime.timedelta(days=1), "明日": today + datetime.timedelta(days=1),
+        "前天": today - datetime.timedelta(days=2),
+        "后天": today + datetime.timedelta(days=2),
+    }
+    for keyword, dt in relative_map.items():
+        if keyword in text:
+            return dt.strftime("%Y-%m-%d")
+
+    # ===== 完整日期: YYYY[-/年]M[-/月]D[日号] =====
+    # 2026-06-15, 2026-6-15, 2026/06/15, 2026年6月15日, 2026.06.15
+    match = re.search(
+        r"(\d{4})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*[日号]?",
+        text
+    )
+    if match:
+        y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        if 1 <= m <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{m:02d}-{d:02d}"
+
+    # ===== 年月: YYYY[-/年]M[月]（默认1日）=====
+    match = re.search(r"(\d{4})\s*[-/年.]\s*(\d{1,2})\s*[月]?", text)
+    if match:
+        y, m = int(match.group(1)), int(match.group(2))
+        if 1 <= m <= 12:
+            return f"{y:04d}-{m:02d}-01"
+
+    # ===== 月日（省略年份，默认今年）: M月D日, M-D, M/D, M.D =====
+    # 6月15日, 06-15, 6/15, 6.15, 6月15
+    patterns_md = [
+        r"(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?",    # 6月15日, 6月15
+        r"(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)",      # 6-15, 6/15, 6.15 (负向预查避免匹配年份)
     ]
-    for pat in patterns:
+    for pat in patterns_md:
         match = re.search(pat, text)
         if match:
-            date_str = match.group(1)
-            # 标准化为 YYYY-MM-DD
-            date_str = date_str.replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
-            return date_str
+            m, d = int(match.group(1)), int(match.group(2))
+            if 1 <= m <= 12 and 1 <= d <= 31:
+                return f"{today.year:04d}-{m:02d}-{d:02d}"
+
     return ""
 
 

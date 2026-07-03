@@ -132,10 +132,12 @@ INTENT_SLOTS_MAP: dict[PrimaryIntent, list[str]] = {
 }
 
 # 子意图 → 额外必需槽位
+# 注意: 日期类字段 (travel_dates, expected_date, expense_date) 不设为必需 —
+#   用户不提供时不追问，Agent 继续执行后续流程
 SUB_INTENT_SLOTS_MAP: dict[SubIntent, list[str]] = {
-    SubIntent.TRAVEL_EXPENSE: ["destination", "travel_dates"],
+    SubIntent.TRAVEL_EXPENSE: ["destination"],
     SubIntent.ENTERTAINMENT_EXPENSE: ["guest_count", "guest_company"],
-    SubIntent.ADVANCE_REQUEST: ["expected_date", "repayment_plan"],
+    SubIntent.ADVANCE_REQUEST: [],
     SubIntent.STATUS_CHECK: [],
     SubIntent.HISTORY_LIST: [],
     SubIntent.AMOUNT_SUMMARY: ["date_range"],
