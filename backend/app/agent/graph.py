@@ -608,28 +608,46 @@ def route_after_save(state: ReimburseState) -> Literal["special_approval", "gene
 # =============================================================================
 def policy_lookup(state: ReimburseState) -> dict:
     """
-    政策咨询节点 —— 回答费用标准、报销流程、部门额度等问题。
+    政策咨询节点 — RAG 增强版。
 
-    使用预置的系统提示词 + LLM 回答。
+    1. 从向量知识库检索相关政策片段
+    2. 将检索结果作为上下文注入 LLM 提示词
+    3. LLM 生成带引用来源的回答
+    4. LLM 不可用时返回预置摘要
     """
     messages = state["messages"]
     last_msg = messages[-1].content if messages else "政策咨询"
 
-    llm_response = _try_llm([
-        HumanMessage(content=f"{SYSTEM_PROMPT}\n\n用户提问: {last_msg}\n\n请根据上述费用标准回答:")
-    ])
+    from app.agent.knowledge.retriever import build_context_for_llm
+    from app.agent.knowledge.loader import get_or_build_index
+
+    get_or_build_index()
+    kb_context = build_context_for_llm(last_msg, top_k=3)
+    logger.info(f"RAG: retrieved {len(kb_context)} chars of context")
+
+    if kb_context:
+        llm_response = _try_llm([
+            HumanMessage(content=POLICY_INQUIRY_PROMPT.format(
+                context=kb_context, user_query=last_msg
+            ))
+        ])
+    else:
+        llm_response = _try_llm([
+            HumanMessage(content=f"{SYSTEM_PROMPT}\n\n用户提问: {last_msg}")
+        ])
 
     if llm_response:
         reply = llm_response
+    elif kb_context:
+        reply = f"📋 根据公司政策:\n\n{kb_context[:800]}"
     else:
         reply = (
-            "📋 **企业报销政策速查**\n\n"
+            "📋 **报销政策速查**\n\n"
             "- 差旅费: 单次上限 ¥10,000，住宿日标准 ¥500\n"
             "- 招待费: 单次上限 ¥3,000，人均 ¥200\n"
             "- 办公费: 单品上限 ¥5,000\n"
-            "- 其他费: 单次上限 ¥2,000\n"
-            "- 研发部差旅专项额度: ¥15,000\n\n"
-            "如有具体问题，请说明费用类型和金额。"
+            "- 其他费: 单次上限 ¥2,000\n\n"
+            "详细政策请参阅《员工手册》或咨询财务部。"
         )
 
     return {"messages": [AIMessage(content=reply)]}
@@ -696,13 +714,20 @@ def approval_process(state: ReimburseState) -> dict:
 
 
 def general_response(state: ReimburseState) -> dict:
-    """通用回复"""
+    """
+    通用回复 — RAG 增强版。
+
+    检索知识库获取相关上下文，让回答更有依据。
+    """
     messages = state["messages"]
     last_msg = messages[-1].content if messages else "你好"
 
-    llm_response = _try_llm([
-        HumanMessage(content=f"{GENERAL_CHAT_PROMPT}\n\n用户: {last_msg}")
-    ])
+    from app.agent.knowledge.retriever import build_context_for_llm
+    kb_context = build_context_for_llm(last_msg, top_k=2)
+
+    prompt = GENERAL_CHAT_PROMPT.format(context=kb_context or "无特定知识库内容", user_query=last_msg)
+    llm_response = _try_llm([HumanMessage(content=prompt)])
+
     if llm_response:
         return {"messages": [AIMessage(content=llm_response)]}
 
