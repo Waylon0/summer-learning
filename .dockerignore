@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+backend/.venv/
+backend/data/
+backend/logs/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Bundled infra binaries (huge files)
+infra/redis/
+infra/minio/
+
+# Git
+.git/
+
+# Env/secrets
+.env
+.env.local
+*.tar.gz

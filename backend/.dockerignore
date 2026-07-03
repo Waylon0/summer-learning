@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Data
+data/reimburse.db
+data/chroma/
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Tests
+.pytest_cache/
+tests/
+
+# Dev config
+.env
+.env.local
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml

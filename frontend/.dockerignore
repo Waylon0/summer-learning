@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Build output
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Dev
+.env
+.env.local
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
