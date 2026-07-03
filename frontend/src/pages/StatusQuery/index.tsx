@@ -1,8 +1,11 @@
-import { useState } from 'react';
-import { Card, Input, Button, Table, Tag, Space, Timeline, message } from 'antd';
-import { SearchOutlined } from '@ant-design/icons';
+import { useState, useCallback, useEffect } from 'react';
+import {
+  Card, Input, Button, Table, Tag, Space, Timeline, Segmented, DatePicker, Empty, Spin, Row, Col,
+} from 'antd';
+import { SearchOutlined, ReloadOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import { getReimbursements, getReimbursement } from '@/services/api';
-import type { ReimbursementRecord } from '@/types';
+import type { ReimbursementRecord, ApprovalRecord } from '@/types';
 
 const statusMap: Record<string, { color: string; label: string }> = {
   pending: { color: 'processing', label: '待审批' },
@@ -12,36 +15,106 @@ const statusMap: Record<string, { color: string; label: string }> = {
   paid: { color: 'success', label: '已支付' },
 };
 
+const statusFilters = [
+  { label: '全部', value: '' },
+  { label: '待审批', value: 'pending' },
+  { label: '已通过', value: 'approved' },
+  { label: '已驳回', value: 'rejected' },
+  { label: '已退回', value: 'returned' },
+  { label: '已支付', value: 'paid' },
+];
+
+const actionIcons: Record<string, React.ReactNode> = {
+  approve: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+  reject: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
+  return: <ClockCircleOutlined style={{ color: '#faad14' }} />,
+};
+
+const actionLabels: Record<string, string> = {
+  approve: '通过',
+  reject: '驳回',
+  return: '退回',
+};
+
+function ApprovalTimeline({ approvals }: { approvals: ApprovalRecord[] }) {
+  return (
+    <Timeline
+      items={[
+        { color: 'blue', children: <div style={{ fontWeight: 500 }}>提交报销申请</div> },
+        ...approvals.map((a) => ({
+          color: a.action === 'approve' ? 'green' : a.action === 'reject' ? 'red' : 'orange',
+          dot: actionIcons[a.action],
+          children: (
+            <div>
+              <Space>
+                <strong>{a.approver}</strong>
+                <Tag color={a.action === 'approve' ? 'success' : a.action === 'reject' ? 'error' : 'warning'}>
+                  {actionLabels[a.action]}
+                </Tag>
+                <span style={{ fontSize: 12, color: '#999' }}>
+                  {a.acted_at ? dayjs(a.acted_at).format('MM-DD HH:mm') : '-'}
+                </span>
+              </Space>
+              {a.comment && (
+                <div style={{ color: '#666', marginTop: 4, fontSize: 13, fontStyle: 'italic' }}>
+                  "{a.comment}"
+                </div>
+              )}
+            </div>
+          ),
+        })),
+      ]}
+    />
+  );
+}
+
 export default function StatusQuery() {
   const [searchId, setSearchId] = useState('');
   const [loading, setLoading] = useState(false);
   const [records, setRecords] = useState<ReimbursementRecord[]>([]);
+  const [allRecords, setAllRecords] = useState<ReimbursementRecord[]>([]);
   const [detail, setDetail] = useState<ReimbursementRecord | null>(null);
+  const [filter, setFilter] = useState('');
+  const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await getReimbursements({ limit: 100 });
+      setAllRecords(list);
+    } catch {
+      // ignore
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  useEffect(() => {
+    let filtered = [...allRecords];
+    if (filter) {
+      filtered = filtered.filter((r) => r.status === filter);
+    }
+    if (dateRange && dateRange[0] && dateRange[1]) {
+      const start = dateRange[0].startOf('day');
+      const end = dateRange[1].endOf('day');
+      filtered = filtered.filter((r) => {
+        if (!r.created_at) return false;
+        const d = dayjs(r.created_at);
+        return d.isAfter(start) && d.isBefore(end);
+      });
+    }
+    setRecords(filtered);
+  }, [allRecords, filter, dateRange]);
 
   const handleSearch = async () => {
-    if (!searchId.trim()) {
-      message.warning('请输入报销单号');
-      return;
-    }
+    if (!searchId.trim()) return;
     setLoading(true);
     try {
       const r = await getReimbursement(searchId.trim());
       setDetail(r);
-      setRecords([]);
     } catch {
       setDetail(null);
-    }
-    setLoading(false);
-  };
-
-  const handleListAll = async () => {
-    setLoading(true);
-    try {
-      const list = await getReimbursements({ limit: 20 });
-      setRecords(list);
-      setDetail(null);
-    } catch {
-      message.error('查询失败');
     }
     setLoading(false);
   };
@@ -49,85 +122,136 @@ export default function StatusQuery() {
   return (
     <div>
       <Card style={{ marginBottom: 16 }}>
-        <Space>
-          <Input
-            placeholder="输入报销单号"
-            value={searchId}
-            onChange={(e) => setSearchId(e.target.value)}
-            onPressEnter={handleSearch}
-            style={{ width: 320 }}
-            allowClear
-          />
-          <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch} loading={loading}>
-            精确查询
-          </Button>
-          <Button onClick={handleListAll}>查看全部</Button>
-        </Space>
+        <Row gutter={[16, 12]} align="middle">
+          <Col>
+            <Space>
+              <Input
+                placeholder="输入报销单号"
+                value={searchId}
+                onChange={(e) => setSearchId(e.target.value)}
+                onPressEnter={handleSearch}
+                style={{ width: 300 }}
+                allowClear
+              />
+              <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch} loading={loading}>
+                精确查询
+              </Button>
+            </Space>
+          </Col>
+          <Col flex="auto" />
+          <Col>
+            <Segmented
+              options={statusFilters}
+              value={filter}
+              onChange={(v) => setFilter(v as string)}
+            />
+          </Col>
+          <Col>
+            <DatePicker.RangePicker
+              value={dateRange as [dayjs.Dayjs | null, dayjs.Dayjs | null]}
+              onChange={(v) => setDateRange(v ? [v[0], v[1]] : null)}
+              allowClear
+              placeholder={['开始日期', '结束日期']}
+              style={{ width: 240 }}
+            />
+          </Col>
+          <Col>
+            <Button icon={<ReloadOutlined />} onClick={fetchAll} loading={loading}>
+              刷新
+            </Button>
+          </Col>
+        </Row>
       </Card>
 
       {detail && (
-        <Card title={`报销单 ${detail.id}`}>
-          <Table
-            dataSource={[
-              { key: '用户', value: detail.user_name },
-              { key: '部门', value: detail.department },
-              { key: '费用类型', value: detail.expense_type },
-              { key: '金额', value: `¥${detail.total_amount.toLocaleString()}` },
-              { key: '票据数', value: detail.invoice_count },
-              { key: '状态', value: <Tag color={statusMap[detail.status]?.color}>{statusMap[detail.status]?.label}</Tag> },
-              { key: '创建时间', value: detail.created_at },
-            ]}
-            columns={[
-              { title: '字段', dataIndex: 'key', width: 120 },
-              { title: '值', dataIndex: 'value' },
-            ]}
-            pagination={false}
-            size="small"
-          />
-          {detail.approvals.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <strong>审批流程</strong>
-              <Timeline
-                items={detail.approvals.map((a) => ({
-                  color: a.action === 'approve' ? 'green' : a.action === 'reject' ? 'red' : 'blue',
-                  children: (
-                    <div>
-                      <strong>{a.approver}</strong> — {a.action}
-                      {a.comment && <div style={{ color: '#666' }}>{a.comment}</div>}
-                      <div style={{ fontSize: 12, color: '#999' }}>{a.acted_at}</div>
+        <Card
+          title={`报销单详情 — ${detail.id.slice(0, 12)}...`}
+          extra={<Button onClick={() => setDetail(null)}>返回列表</Button>}
+          style={{ marginBottom: 16 }}
+        >
+          <Row gutter={[16, 0]}>
+            <Col span={12}>
+              <Card size="small" title="基本信息" style={{ marginBottom: 16 }}>
+                <table style={{ width: '100%', lineHeight: 2.4, fontSize: 14 }}>
+                  <tbody>
+                    <tr><td style={{ color: '#999' }}>申请人</td><td>{detail.user_name}</td></tr>
+                    <tr><td style={{ color: '#999' }}>部门</td><td>{detail.department}</td></tr>
+                    <tr><td style={{ color: '#999' }}>费用类型</td><td>{detail.expense_type}</td></tr>
+                    <tr><td style={{ color: '#999' }}>金额</td><td style={{ fontWeight: 600, color: '#1677ff', fontSize: 16 }}>¥{detail.total_amount.toLocaleString()}</td></tr>
+                    <tr><td style={{ color: '#999' }}>状态</td><td><Tag color={statusMap[detail.status]?.color}>{statusMap[detail.status]?.label}</Tag></td></tr>
+                    <tr><td style={{ color: '#999' }}>创建时间</td><td>{detail.created_at ? dayjs(detail.created_at).format('YYYY-MM-DD HH:mm') : '-'}</td></tr>
+                  </tbody>
+                </table>
+              </Card>
+            </Col>
+            <Col span={12}>
+              <Card size="small" title="发票明细" style={{ marginBottom: 16 }}>
+                {detail.invoices.length === 0 ? (
+                  <Empty description="无发票记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  detail.invoices.map((inv, i) => (
+                    <div key={inv.id || i} style={{ marginBottom: 10, padding: '8px 12px', background: '#fafafa', borderRadius: 6 }}>
+                      <Space>
+                        <Tag>发票 {i + 1}</Tag>
+                        <span>{inv.invoice_code || '-'}</span>
+                        <span style={{ fontWeight: 500, color: '#1677ff' }}>¥{inv.amount?.toLocaleString() || '-'}</span>
+                      </Space>
+                      {inv.seller_name && <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>销售方: {inv.seller_name}</div>}
                     </div>
-                  ),
-                }))}
-              />
-            </div>
-          )}
+                  ))
+                )}
+              </Card>
+            </Col>
+          </Row>
+          <Card size="small" title="审批流程">
+            {detail.approvals.length === 0 ? (
+              <Empty description="暂无审批记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : (
+              <ApprovalTimeline approvals={detail.approvals} />
+            )}
+          </Card>
         </Card>
       )}
 
-      {records.length > 0 && (
-        <Card title="报销记录列表">
-          <Table
-            dataSource={records}
-            columns={[
-              { title: '报销单号', dataIndex: 'id', key: 'id', width: 100, render: (v: string) => v.slice(0, 8) + '...' },
-              { title: '用户', dataIndex: 'user_name', key: 'user_name' },
-              { title: '部门', dataIndex: 'department', key: 'department' },
-              { title: '类型', dataIndex: 'expense_type', key: 'expense_type' },
-              { title: '金额', dataIndex: 'total_amount', key: 'total_amount', render: (v: number) => `¥${v.toLocaleString()}` },
-              {
-                title: '状态', dataIndex: 'status', key: 'status',
-                render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label}</Tag>,
-              },
-            ]}
-            rowKey="id"
-            size="middle"
-            onRow={(r) => ({
-              onClick: () => { setDetail(r); setRecords([]); },
-              style: { cursor: 'pointer' },
-            })}
-          />
-        </Card>
-      )}
+      <Card title="报销记录列表">
+        <Spin spinning={loading}>
+          {records.length === 0 ? (
+            <Empty
+              description={allRecords.length === 0 ? '暂无报销记录' : '没有匹配的记录'}
+              style={{ padding: 60 }}
+            />
+          ) : (
+            <Table
+              dataSource={records}
+              columns={[
+                { title: '报销单号', dataIndex: 'id', key: 'id', width: 110, render: (v: string) => v.slice(0, 8) + '...' },
+                { title: '申请人', dataIndex: 'user_name', key: 'user_name', width: 90 },
+                { title: '部门', dataIndex: 'department', key: 'department', width: 90 },
+                { title: '费用类型', dataIndex: 'expense_type', key: 'expense_type', width: 90 },
+                {
+                  title: '金额', dataIndex: 'total_amount', key: 'total_amount', width: 120,
+                  render: (v: number) => <span style={{ fontWeight: 600 }}>¥{v.toLocaleString()}</span>,
+                },
+                {
+                  title: '状态', dataIndex: 'status', key: 'status', width: 80,
+                  render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label}</Tag>,
+                },
+                {
+                  title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170,
+                  render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-',
+                },
+              ]}
+              rowKey="id"
+              size="middle"
+              pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 条` }}
+              onRow={(r) => ({
+                onClick: () => { setDetail(r); },
+                style: { cursor: 'pointer' },
+              })}
+            />
+          )}
+        </Spin>
+      </Card>
     </div>
   );
 }
