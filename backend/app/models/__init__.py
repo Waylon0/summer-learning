@@ -9,6 +9,7 @@ from app.models.reimbursement import (
     Invoice,
     DepartmentBudget,
     ApprovalRecord,
+    ExpensePolicy,
 )
 
-__all__ = ["Reimbursement", "Invoice", "DepartmentBudget", "ApprovalRecord"]
+__all__ = ["Reimbursement", "Invoice", "DepartmentBudget", "ApprovalRecord", "ExpensePolicy"]

@@ -11,6 +11,7 @@ from app.agent.tools.reimburse_tools import (
     budget_check,
     generate_reimbursement_pdf,
     send_approval_email,
+    save_reimbursement_to_db,
     query_reimbursement_status,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "budget_check",
     "generate_reimbursement_pdf",
     "send_approval_email",
+    "save_reimbursement_to_db",
     "query_reimbursement_status",
 ]

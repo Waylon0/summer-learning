@@ -4,50 +4,174 @@ app/agent/tools/reimburse_tools.py — Agent 工具集
 =============================================================================
 Agent 的"工具箱"，每个函数代表一项能力：
 
-  1. ocr_recognize_invoice     — 识别发票上的文字信息
+  1. ocr_recognize_invoice     — 识别发票上的文字信息（DeepSeek Vision）
   2. compliance_check          — 检查报销金额是否在公司标准内
   3. budget_check              — 查询部门预算，判断是否超标
   4. generate_reimbursement_pdf — 用 reportlab 生成真实 PDF 报销单
   5. send_approval_email       — 发送审批邮件
-  6. query_reimbursement_status — 从数据库查询报销进度
+  6. save_reimbursement_to_db  — 报销单持久化到数据库
+  7. query_reimbursement_status — 从数据库查询报销进度
 
-这些函数由 LangGraph 工作流节点直接调用，不经过 LLM 的 tool-calling 机制。
+所有涉及 I/O 的函数均为 async，由 LangGraph 异步节点直接 await。
 =============================================================================
 """
-import asyncio                                            # 用于在同步函数中运行异步数据库查询
+import base64
+import json
+import os
+import uuid
+from decimal import Decimal
+from io import BytesIO
 from loguru import logger
 from app.core.config import get_settings
-from app.core.database import AsyncSessionLocal           # 数据库会话工厂
-from app.models.reimbursement import DepartmentBudget, Reimbursement, ApprovalRecord
-from sqlalchemy import select                             # SQL 查询语句构造器
+from app.core.database import engine
 
 settings = get_settings()
+
+# =============================================================================
+# OCR 提示词
+# =============================================================================
+_INVOICE_OCR_PROMPT = """你是一个专业的发票识别助手。请从发票内容中提取以下字段，只返回 JSON：
+
+{
+  "invoice_code": "发票代码（12位数字）",
+  "invoice_number": "发票号码（8位数字）",
+  "amount": 金额(数字),
+  "invoice_date": "开票日期（YYYY-MM-DD格式）",
+  "seller_name": "销售方名称",
+  "buyer_name": "购买方名称"
+}
+
+如果某个字段无法识别，设为空字符串 ""。金额无法识别时设为 0。
+只返回 JSON，不要输出任何其他内容。"""
 
 
 # =============================================================================
 # 工具 1：OCR 发票识别
 # =============================================================================
-def ocr_recognize_invoice(file_path: str) -> dict:
+async def ocr_recognize_invoice(file_path: str) -> dict:
     """
     识别上传的票据文件（图片/PDF）中的发票信息。
 
-    当前为模拟实现（返回固定数据）。
-    实际生产环境应接入 PaddleOCR 或大模型视觉 API。
-
-    Args:
-        file_path: MinIO 中存储的文件路径
-
-    Returns:
-        发票结构化信息（发票代码、号码、金额、日期、购销方）
+    图片文件：通过 DeepSeek Vision 多模态识别
+    PDF 文件：先用 pypdf 提取文本，再用 DeepSeek 结构化
+    无文件时：返回空结构
     """
-    logger.info(f"OCR processing: {file_path}")
+    if not file_path:
+        logger.info("OCR skipped: no file path provided")
+        return _empty_invoice_result("")
+
+    ext = os.path.splitext(file_path)[1].lower()
+    logger.info(f"OCR processing: {file_path} (type={ext})")
+
+    from app.services.ocr_svc import get_file_content
+    try:
+        content = await get_file_content(file_path)
+    except Exception as e:
+        logger.warning(f"MinIO download failed for {file_path}: {e}")
+        return _empty_invoice_result(file_path)
+
+    if ext in (".png", ".jpg", ".jpeg", ".webp"):
+        return _ocr_image(content, file_path)
+    elif ext == ".pdf":
+        return _ocr_pdf(content, file_path)
+    else:
+        logger.warning(f"Unsupported file type: {ext}")
+        return _empty_invoice_result(file_path)
+
+
+def _ocr_image(image_bytes: bytes, file_path: str) -> dict:
+    """用 DeepSeek Vision 识别图片中的发票信息"""
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        mime = f"image/{ext}" if ext in ("png", "jpg", "jpeg", "webp") else "image/png"
+
+        from langchain_openai import ChatOpenAI
+        vision_llm = ChatOpenAI(
+            model=settings.OPENAI_MODEL,
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+            temperature=0,
+            request_timeout=30,
+            max_retries=1,
+        )
+        msg = vision_llm.invoke([{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": _INVOICE_OCR_PROMPT},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        }])
+        return _parse_llm_invoice(msg.content, file_path)
+    except Exception as e:
+        logger.warning(f"Vision OCR failed: {e}")
+        return _empty_invoice_result(file_path)
+
+
+def _ocr_pdf(pdf_bytes: bytes, file_path: str) -> dict:
+    """用 pypdf 提取 PDF 文本，再用 DeepSeek 结构化"""
+    text = ""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(pdf_bytes))
+        for page in reader.pages[:3]:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    except Exception as e:
+        logger.warning(f"PDF text extraction failed: {e}")
+        return _empty_invoice_result(file_path)
+
+    if not text.strip():
+        logger.warning("PDF has no extractable text")
+        return _empty_invoice_result(file_path)
+
+    logger.info(f"PDF text extracted: {len(text)} chars")
+    try:
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(
+            model=settings.OPENAI_MODEL,
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+            temperature=0,
+            request_timeout=15,
+            max_retries=1,
+        )
+        msg = llm.invoke(f"{_INVOICE_OCR_PROMPT}\n\n发票文本内容:\n{text[:4000]}")
+        return _parse_llm_invoice(msg.content, file_path)
+    except Exception as e:
+        logger.warning(f"LLM invoice structuring failed: {e}")
+        return _empty_invoice_result(file_path)
+
+
+def _parse_llm_invoice(raw: str, file_path: str) -> dict:
+    """解析 LLM 返回的 JSON 字符串"""
+    content = raw.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+    try:
+        data = json.loads(content)
+        result = {
+            "invoice_code": str(data.get("invoice_code", "")),
+            "invoice_number": str(data.get("invoice_number", "")),
+            "amount": float(data.get("amount", 0) or 0),
+            "invoice_date": str(data.get("invoice_date", "")),
+            "seller_name": str(data.get("seller_name", "")),
+            "buyer_name": str(data.get("buyer_name", "")),
+            "file_path": file_path,
+        }
+        logger.info(f"OCR result: amount={result['amount']} seller={result['seller_name']}")
+        return result
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning(f"Failed to parse LLM invoice JSON: {e}")
+        return _empty_invoice_result(file_path)
+
+
+def _empty_invoice_result(file_path: str) -> dict:
     return {
-        "invoice_code": "044001900111",
-        "invoice_number": "87654321",
-        "amount": 1500.00,
-        "invoice_date": "2026-06-15",
-        "seller_name": "某某科技有限公司",
-        "buyer_name": "中国石油华东分公司",
+        "invoice_code": "", "invoice_number": "",
+        "amount": 0, "invoice_date": "",
+        "seller_name": "", "buyer_name": "",
         "file_path": file_path,
     }
 
@@ -55,46 +179,64 @@ def ocr_recognize_invoice(file_path: str) -> dict:
 # =============================================================================
 # 工具 2：合规审查
 # =============================================================================
-def compliance_check(expense_type: str, total_amount: float, department: str) -> dict:
+async def compliance_check(expense_type: str, total_amount: float, department: str) -> dict:
     """
     检查费用是否符合公司差旅/招待/办公标准。
-
-    公司费用标准（硬编码，实际可从数据库读取）：
-      - 差旅（travel）:       单次上限 ¥10,000，日标准 ¥500
-      - 招待（entertainment）: 单次上限 ¥3,000，人均 ¥200
-      - 办公（office）:        单品上限 ¥5,000
-      - 其他（other）:         单次上限 ¥2,000
-
-    Args:
-        expense_type: 费用类型
-        total_amount: 报销总金额
-        department:   部门名称
-
-    Returns:
-        {"compliant": True/False, "message": "合规/超标说明"}
+    优先从数据库 expense_policy 表读取限额，DB 不可用时 fallback 到硬编码默认值。
     """
-    # 定义费用标准表
-    limits = {
-        "travel":        {"max_per_trip": 10000, "daily": 500},
-        "entertainment": {"max_per_event": 3000, "per_person": 200},
+    _FALLBACK_LIMITS = {
+        "travel":        {"max_per_trip": 10000, "daily_limit": 500},
+        "entertainment": {"max_per_event": 3000, "per_person_limit": 200},
         "office":        {"max_per_item": 5000},
         "other":         {"max_per_request": 2000},
     }
-    limit = limits.get(expense_type, {"max_per_request": 2000})
-    max_val = limit.get(
-        "max_per_request",
-        limit.get("max_per_trip", limit.get("max_per_item", 2000)),
-    )
+
+    policy = None
+    try:
+        from sqlalchemy import text
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT * FROM expense_policy WHERE expense_type = :etype"),
+                {"etype": expense_type},
+            )
+            row = result.fetchone()
+        if row:
+            policy = {
+                "max_per_request": float(row.max_per_request) if row.max_per_request else None,
+                "max_per_trip": float(row.max_per_trip) if row.max_per_trip else None,
+                "max_per_item": float(row.max_per_item) if row.max_per_item else None,
+                "max_per_event": float(row.max_per_event) if row.max_per_event else None,
+            }
+    except Exception as e:
+        logger.warning(f"Failed to load expense policy from DB: {e}")
+
+    if policy:
+        max_val = float(
+            policy.get("max_per_request") or policy.get("max_per_trip")
+            or policy.get("max_per_item") or policy.get("max_per_event") or 2000
+        )
+        source = "database"
+    else:
+        fallback = _FALLBACK_LIMITS.get(expense_type, {"max_per_request": 2000})
+        max_val = float(
+            fallback.get("max_per_request") or fallback.get("max_per_trip")
+            or fallback.get("max_per_item") or 2000
+        )
+        source = "fallback"
 
     compliant = total_amount <= max_val
+    type_names = {"travel": "差旅", "entertainment": "招待", "office": "办公", "other": "其他"}
+    type_cn = type_names.get(expense_type, expense_type)
+
     return {
         "compliant": compliant,
         "expense_type": expense_type,
         "limit": max_val,
+        "limit_source": source,
         "message": (
-            f"✅ 金额 {total_amount} 元在 {expense_type} 类标准 {max_val} 元以内，合规。"
+            f"✅ {type_cn}费 {total_amount} 元在标准 {max_val} 元以内，合规。"
             if compliant else
-            f"⚠️ 金额 {total_amount} 元超过 {expense_type} 类标准 {max_val} 元，需要特殊说明。"
+            f"⚠️ {type_cn}费 {total_amount} 元超过标准 {max_val} 元，需要特殊说明。"
         ),
     }
 
@@ -102,211 +244,367 @@ def compliance_check(expense_type: str, total_amount: float, department: str) ->
 # =============================================================================
 # 工具 3：预算池控制
 # =============================================================================
-def budget_check(department: str, amount: float) -> dict:
+async def budget_check(department: str, amount: float) -> dict:
     """
     查询部门预算余额，计算报销后是否超标。
-
-    这是唯一连接到真实数据库的工具：
-      1. 查询 department_budget 表，获取该部门的预算信息
-      2. 如果查不到（该部门未在预算表中），使用兜底默认值
-      3. 计算报销后余额，判断是否超标
-
-    Args:
-        department: 部门名称
-        amount:     报销金额
-
-    Returns:
-        预算状态（annual_budget, used, remaining, exceeded, need_special_approval）
     """
-    # 内部异步函数：查询数据库
-    async def _query():
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(DepartmentBudget).where(
-                    DepartmentBudget.department == department
-                )
-            )
-            budget = result.scalar_one_or_none()             # 可能查不到（返回 None）
-            if budget:
-                return {
-                    "department": budget.department,
-                    "annual_budget": float(budget.annual_budget),
-                    "used": float(budget.used_amount),
-                    "remaining": float(budget.annual_budget - budget.used_amount),
-                }
-            return None
-
-    # 在同步函数中用 asyncio.run() 执行异步查询
+    from sqlalchemy import text
+    bud = None
     try:
-        bud = asyncio.run(_query())
-    except Exception:
-        logger.warning(f"DB query failed for department={department}, using fallback")
-        bud = None
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT department, annual_budget, used_amount "
+                    "FROM department_budget WHERE department = :dept"
+                ),
+                {"dept": department},
+            )
+            row = result.fetchone()
+            if row:
+                bud = {
+                    "department": row.department,
+                    "annual_budget": float(row.annual_budget),
+                    "used": float(row.used_amount),
+                    "remaining": float(row.annual_budget - row.used_amount),
+                }
+    except Exception as e:
+        logger.warning(f"DB query failed for department={department}: {e}")
 
-    # 兜底值：数据库查不到时用默认预算
-    fallback = {"annual_budget": 100000, "used": 50000, "remaining": 50000}
     if bud is None:
-        bud = {"department": department, **fallback}
+        bud = {"department": department, "annual_budget": 100000, "used": 50000, "remaining": 50000}
 
-    # 计算报销后余额
     after = bud["remaining"] - amount
-    exceeded = after < 0                                   # 余额为负 → 超标
+    exceeded = after < 0
     logger.info(
         f"Budget check: {department} "
         f"remaining={bud['remaining']} after={after} exceeded={exceeded}"
     )
-
     return {
         "department": department,
         "annual_budget": bud["annual_budget"],
         "used": bud["used"],
         "remaining": bud["remaining"],
-        "after_reimbursement": after,                      # 报销后余额（可能为负）
+        "after_reimbursement": after,
         "exceeded": exceeded,
-        "need_special_approval": exceeded,                  # 超标时需要特殊审批
+        "need_special_approval": exceeded,
     }
 
 
 # =============================================================================
-# 工具 4：生成报销单 PDF
+# 工具 4：生成报销单 PDF（中文字体 + 表格 + 签字区）
 # =============================================================================
 def generate_reimbursement_pdf(reimb_data: dict) -> str:
-    """
-    使用 reportlab 库生成真实的 PDF 报销单。
-
-    Args:
-        reimb_data: {"id": "...", "department": "...", "expense_type": "...", "total_amount": 1500}
-
-    Returns:
-        生成的 PDF 文件绝对路径
-    """
+    """生成格式化的中文报销单 PDF"""
+    import os as _os
     import tempfile
-    from reportlab.pdfgen import canvas                     # PDF 画布
-    from reportlab.lib.pagesizes import A4                  # A4 纸张尺寸
+    from datetime import date
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.graphics.barcode import code128
+
+    # ---- 注册中文字体 ----
+    _font_dir = _os.path.join(_os.environ.get("WINDIR", "C:/Windows"), "Fonts")
+    _font_title = _os.path.join(_font_dir, "simhei.ttf")
+    _font_body = _os.path.join(_font_dir, "msyh.ttc")
+    _font_exists = _os.path.exists
+
+    if _font_exists(_font_title):
+        pdfmetrics.registerFont(TTFont("SimHei", _font_title))
+        title_font = "SimHei"
+    else:
+        title_font = "Helvetica"
+
+    if _font_exists(_font_body):
+        pdfmetrics.registerFont(TTFont("MSYH", _font_body))
+        body_font = "MSYH"
+    else:
+        body_font = title_font
 
     reimb_id = reimb_data.get("id", "unknown")
-    # 创建临时文件
     path = tempfile.mktemp(suffix=f"_reimb_{reimb_id}.pdf")
 
-    # 创建 PDF 画布
     c = canvas.Canvas(path, pagesize=A4)
-    c.setFont("Helvetica", 18)
-    c.drawString(50, 780, "费用报销单")                     # 标题
+    W, H = A4
+    margin = 20 * mm
+    today = date.today().isoformat()
 
-    c.setFont("Helvetica", 11)
-    y = 740                                                 # 起始 Y 坐标
-    for label, key in [
-        ("报销单号", "id"),
-        ("部门", "department"),
-        ("费用类型", "expense_type"),
-        ("总金额", "total_amount"),
-    ]:
-        val = reimb_data.get(key, "")
-        if key == "total_amount":
-            val = f"¥{float(val):,.2f}"                     # 格式化金额
-        c.drawString(50, y, f"{label}: {val}")
-        y -= 25
+    # ---- 边框 ----
+    c.setStrokeColorRGB(0.2, 0.2, 0.2)
+    c.setLineWidth(1.5)
+    c.rect(margin, margin, W - 2 * margin, H - 2 * margin)
+    c.setLineWidth(0.5)
+    c.rect(margin + 3, margin + 3, W - 2 * margin - 6, H - 2 * margin - 6)
 
-    c.save()                                                # 保存文件
+    # ---- 公司抬头 ----
+    c.setFont(title_font, 22)
+    c.drawCentredString(W / 2, H - margin - 18 * mm, "中国石油华东分公司")
+    c.setFont(body_font, 14)
+    c.drawCentredString(W / 2, H - margin - 26 * mm, "费 用 报 销 单")
+
+    # ---- 分隔线 ----
+    y_top = H - margin - 32 * mm
+    c.setStrokeColorRGB(0, 0, 0)
+    c.setLineWidth(1)
+    c.line(margin + 5 * mm, y_top, W - margin - 5 * mm, y_top)
+
+    # ---- 基本信息表格 ----
+    c.setFont(body_font, 10)
+    col1_x = margin + 8 * mm
+    col2_x = margin + 35 * mm
+    col3_x = margin + 95 * mm
+    col4_x = margin + 122 * mm
+    row_h = 9 * mm
+    y = y_top - row_h
+
+    def draw_row(label1, val1, label2=None, val2=None):
+        nonlocal y
+        c.setFont(body_font, 10)
+        c.drawString(col1_x, y + 2 * mm, label1)
+        val_str = str(val1) if val1 is not None else ""
+        c.drawString(col2_x, y + 2 * mm, val_str)
+        if label2 and val2 is not None:
+            c.drawString(col3_x, y + 2 * mm, label2)
+            c.drawString(col4_x, y + 2 * mm, str(val2))
+        # 行线
+        c.setStrokeColorRGB(0.7, 0.7, 0.7)
+        c.setLineWidth(0.3)
+        c.line(col1_x, y, W - margin - 5 * mm, y)
+        y -= row_h
+
+    expense_type_map = {"travel": "差旅费", "entertainment": "招待费", "office": "办公用品", "other": "其他"}
+    total = float(reimb_data.get("total_amount", 0))
+
+    draw_row("报销单号：", reimb_id, "日期：", today)
+    draw_row("部    门：", reimb_data.get("department", ""),
+             "费用类型：", expense_type_map.get(reimb_data.get("expense_type", ""), ""))
+    draw_row("金    额：", f"¥{total:,.2f}",
+             "发票张数：", str(len(reimb_data.get("invoices", [])) or 1))
+
+    # ---- 发票明细表格 ----
+    y -= 6 * mm
+    c.setFont(body_font, 11)
+    c.drawString(col1_x, y + 2 * mm, "发票明细：")
+    y -= 5 * mm
+
+    # 表头
+    tbl_left = col1_x
+    tbl_cols = [tbl_left, tbl_left + 30 * mm, tbl_left + 62 * mm, tbl_left + 90 * mm, tbl_left + 115 * mm]
+    tbl_widths = [30 * mm, 32 * mm, 28 * mm, 25 * mm, 25 * mm]
+    headers = ["发票代码", "发票号码", "开票日期", "金额", "销售方"]
+    tbl_row_h = 7 * mm
+
+    c.setFont(body_font, 9)
+    c.setFillColorRGB(0.9, 0.9, 0.9)
+    c.rect(tbl_left, y - tbl_row_h, sum(tbl_widths), tbl_row_h, fill=1, stroke=1)
+    c.setFillColorRGB(0, 0, 0)
+    for i, (hdr, cx) in enumerate(zip(headers, tbl_cols)):
+        c.drawString(cx + 1 * mm, y - tbl_row_h + 2 * mm, hdr)
+    y -= tbl_row_h
+
+    # 表体
+    invoices = reimb_data.get("invoices", [])
+    if not invoices:
+        invoices = [{}]
+    for inv in invoices[:5]:  # 最多显示 5 行
+        c.setFillColorRGB(1, 1, 1)
+        c.rect(tbl_left, y - tbl_row_h, sum(tbl_widths), tbl_row_h, fill=1, stroke=1)
+        c.setFillColorRGB(0, 0, 0)
+        vals = [
+            str(inv.get("invoice_code", ""))[:16],
+            str(inv.get("invoice_number", ""))[:16],
+            str(inv.get("invoice_date", ""))[:10],
+            f"¥{float(inv.get('amount', 0) or 0):,.2f}",
+            str(inv.get("seller_name", ""))[:8],
+        ]
+        for v, cx in zip(vals, tbl_cols):
+            c.drawString(cx + 1 * mm, y - tbl_row_h + 2 * mm, v)
+        y -= tbl_row_h
+
+    # ---- 审批签字区 ----
+    y -= 10 * mm
+    c.setFont(body_font, 10)
+    c.drawString(col1_x, y + 2 * mm, "审批记录：")
+    y -= 7 * mm
+
+    sign_labels = [
+        ("申请人签名：", col1_x),
+        ("部门经理：", col1_x + 55 * mm),
+        ("财务审核：", col1_x + 105 * mm),
+    ]
+    c.setFont(body_font, 9)
+    for label, sx in sign_labels:
+        c.drawString(sx, y + 2 * mm, label)
+        c.line(sx + 16 * mm, y + 1 * mm, sx + 40 * mm, y + 1 * mm)  # 签名横线
+
+    y -= 12 * mm
+    c.drawString(col1_x, y + 2 * mm, "日    期：")
+    c.line(col1_x + 18 * mm, y + 1 * mm, col1_x + 42 * mm, y + 1 * mm)
+    c.drawString(col1_x + 55 * mm, y + 2 * mm, "日    期：")
+    c.line(col1_x + 73 * mm, y + 1 * mm, col1_x + 97 * mm, y + 1 * mm)
+    c.drawString(col1_x + 105 * mm, y + 2 * mm, "日    期：")
+    c.line(col1_x + 123 * mm, y + 1 * mm, col1_x + 147 * mm, y + 1 * mm)
+
+    c.setFont(body_font, 8)
+    c.drawString(margin + 8 * mm, margin + 6 * mm, f"系统生成 · {today}")
+    c.drawRightString(W - margin - 8 * mm, margin + 6 * mm, f"编号: {reimb_id}")
+
+    c.save()
     logger.info(f"PDF created: {path}")
     return path
 
 
 # =============================================================================
-# 工具 5：发送审批邮件
+# 工具 5：发送审批邮件（同步，Celery 任务提交后立即返回）
 # =============================================================================
-def send_approval_email(to_email: str, reimb_id: str, total_amount: float) -> dict:
-    """
-    发送审批通知邮件。
+def send_approval_email(to_email: str, reimb_id: str, total_amount: float, pdf_path: str = "") -> dict:
+    """发送审批通知邮件（优先 Celery 异步，不可用时同步发送）"""
+    logger.info(f"Email to={to_email} reimb={reimb_id} amount={total_amount} pdf={pdf_path}")
 
-    优先使用 Celery 异步发送（不阻塞当前请求）。
-    如果 Celery 不可用，跳过邮件发送。
-
-    Args:
-        to_email:     审批人邮箱
-        reimb_id:     报销单 ID
-        total_amount: 报销金额
-
-    Returns:
-        发送结果 {"sent": True/False, "message": "..."}
-    """
-    logger.info(f"Email task queued: to={to_email} reimb={reimb_id} amount={total_amount}")
-
+    sent = False
+    # 优先用 Celery 异步
     try:
-        # 尝试丢给 Celery 异步处理（不阻塞用户请求）
         from app.tasks.email_task import send_approval_email_task
-        send_approval_email_task.delay(to_email, reimb_id, total_amount, "")
+        send_approval_email_task.delay(to_email, reimb_id, total_amount, pdf_path)
         sent = True
-    except Exception:
-        logger.warning("Celery not available, email skipped")
-        sent = True                                        # 邮件功能不影响主流程
+        logger.info("Email queued via Celery")
+    except Exception as e:
+        logger.warning(f"Celery unavailable ({e}), trying direct send...")
+        # Celery 不可用时，同步直接发送
+        import asyncio
+        try:
+            from app.services.email_svc import send_email
+            subject = f"【报销审批】报销单 {reimb_id} 待审批 - ¥{total_amount:,.2f}"
+            body = f"<h2>报销审批通知</h2><p>报销单编号: <b>{reimb_id}</b></p><p>报销金额: <b>¥{total_amount:,.2f}</b></p><p>请登录系统进行审批。</p>"
+            asyncio.run(send_email(
+                to_email, subject, body,
+                pdf_path if pdf_path else None,
+                f"报销单_{reimb_id}.pdf",
+            ))
+            sent = True
+            logger.info(f"Email sent directly to {to_email}")
+        except Exception as e2:
+            logger.error(f"Direct email also failed: {e2}")
 
     return {
-        "sent": sent,
-        "to": to_email,
-        "reimb_id": reimb_id,
-        "message": f"报销单 {reimb_id} (金额 ¥{total_amount:,.2f}) 已提交审批。",
+        "sent": sent, "to": to_email, "reimb_id": reimb_id,
+        "message": (
+            f"报销单 {reimb_id} (金额 ¥{total_amount:,.2f}) 已提交审批，邮件已发送。"
+            if sent else
+            f"报销单 {reimb_id} 已提交，但邮件发送失败。"
+        ),
     }
 
 
 # =============================================================================
-# 工具 6：查询报销进度
+# 工具 6：报销单持久化到数据库
 # =============================================================================
-def query_reimbursement_status(reimb_id: str = "", date_from: str = "", date_to: str = "") -> dict:
-    """
-    从数据库查询报销单的审批流程状态。
+async def save_reimbursement_to_db(
+    department: str, expense_type: str, total_amount: float,
+    invoices: list[dict], need_special_approval: bool,
+    budget_remaining_after: float, description: str = "",
+    user_id: str = "demo_user", user_name: str = "演示用户",
+) -> dict:
+    """将报销单、发票明细写入数据库，并更新部门预算已使用金额"""
+    from sqlalchemy import text
 
-    如果传入 reimb_id，精确查询该单的审批记录。
-    如果查不到（或 ID 为空），返回模拟的审批流程。
+    reimb_id = uuid.uuid4().hex[:12]
+    total_dec = Decimal(str(total_amount))
+    budget_after = Decimal(str(budget_remaining_after)) if budget_remaining_after else None
 
-    Args:
-        reimb_id:  报销单 ID
-        date_from: 开始日期
-        date_to:   结束日期
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            INSERT INTO reimbursements
+            (id, user_id, user_name, department, expense_type, total_amount,
+             description, invoice_count, need_special_approval,
+             budget_remaining_after, status)
+            VALUES (:id, :uid, :uname, :dept, :etype, :amount,
+                    :desc, :icount, :special, :remaining, 'pending')
+        """), {
+            "id": reimb_id, "uid": user_id, "uname": user_name,
+            "dept": department, "etype": expense_type, "amount": total_dec,
+            "desc": description, "icount": len(invoices),
+            "special": need_special_approval, "remaining": budget_after,
+        })
 
-    Returns:
-        审批状态与步骤列表
-    """
-    async def _query():
-        async with AsyncSessionLocal() as session:
-            if reimb_id:
-                # 查询报销单
-                result = await session.execute(
-                    select(Reimbursement).where(Reimbursement.id == reimb_id)
-                )
-                reimb = result.scalar_one_or_none()
-                if reimb:
-                    # 查询关联的审批记录
-                    approvals_result = await session.execute(
-                        select(ApprovalRecord)
-                        .where(ApprovalRecord.reimbursement_id == reimb_id)
-                        .order_by(ApprovalRecord.step)
-                    )
-                    approvals = approvals_result.scalars().all()
-                    return {"status": reimb.status, "approvals": approvals}
-            return None
+        for inv in invoices:
+            await conn.execute(text("""
+                INSERT INTO invoices
+                (id, reimbursement_id, invoice_code, invoice_number, amount,
+                 invoice_date, seller_name, buyer_name, file_path)
+                VALUES (:id, :rid, :code, :num, :amount,
+                        :date, :seller, :buyer, :fpath)
+            """), {
+                "id": uuid.uuid4().hex[:12], "rid": reimb_id,
+                "code": inv.get("invoice_code") or "",
+                "num": inv.get("invoice_number") or "",
+                "amount": Decimal(str(inv.get("amount", 0) or 0)),
+                "date": inv.get("invoice_date") or None,
+                "seller": inv.get("seller_name") or "",
+                "buyer": inv.get("buyer_name") or "",
+                "fpath": inv.get("file_path") or "",
+            })
 
+        await conn.execute(text("""
+            INSERT INTO approval_records
+            (id, reimbursement_id, approver, step, action, comment)
+            VALUES (:id, :rid, '部门经理', 1, 'pending', '报销单已提交，等待审批')
+        """), {"id": uuid.uuid4().hex[:12], "rid": reimb_id})
+
+        await conn.execute(text("""
+            UPDATE department_budget
+            SET used_amount = used_amount + :amount
+            WHERE department = :dept
+        """), {"amount": total_dec, "dept": department})
+
+    logger.info(
+        f"报销单已入库: id={reimb_id} dept={department} "
+        f"amount={total_amount} special={need_special_approval}"
+    )
+    return {"reimb_id": reimb_id, "status": "pending"}
+
+
+# =============================================================================
+# 工具 7：查询报销进度
+# =============================================================================
+async def query_reimbursement_status(
+    reimb_id: str = "", date_from: str = "", date_to: str = ""
+) -> dict:
+    """从数据库查询报销单的审批流程状态"""
+    from sqlalchemy import text
     try:
-        data = asyncio.run(_query())
-    except Exception:
-        logger.warning("DB query failed for status check")
-        data = None
+        async with engine.connect() as conn:
+            if reimb_id:
+                result = await conn.execute(
+                    text("SELECT status FROM reimbursements WHERE id = :rid"),
+                    {"rid": reimb_id},
+                )
+                reimb = result.fetchone()
+                if reimb:
+                    ar = await conn.execute(
+                        text(
+                            "SELECT step, approver, action FROM approval_records "
+                            "WHERE reimbursement_id = :rid ORDER BY step"
+                        ),
+                        {"rid": reimb_id},
+                    )
+                    approvals = ar.fetchall()
+                    return {
+                        "reimb_id": reimb_id,
+                        "status": reimb.status,
+                        "steps": [
+                            {"step": a.step, "approver": a.approver, "action": a.action}
+                            for a in approvals
+                        ] or [
+                            {"step": 1, "approver": "部门经理", "action": "待审批"},
+                            {"step": 2, "approver": "财务总监", "action": "等待中"},
+                        ],
+                    }
+    except Exception as e:
+        logger.warning(f"DB query failed for status check: {e}")
 
-    # 查到了真实数据 → 返回
-    if data:
-        return {
-            "reimb_id": reimb_id or "N/A",
-            "status": data["status"],
-            "steps": [
-                {"step": a.step, "approver": a.approver, "action": a.action}
-                for a in data["approvals"]
-            ] or [
-                {"step": 1, "approver": "部门经理", "action": "待审批"},
-                {"step": 2, "approver": "财务总监", "action": "等待中"},
-            ],
-        }
-
-    # 没查到 → 返回模拟数据
     return {
         "reimb_id": reimb_id or "N/A",
         "status": "pending",
@@ -326,5 +624,6 @@ ALL_TOOLS = [
     budget_check,
     generate_reimbursement_pdf,
     send_approval_email,
+    save_reimbursement_to_db,
     query_reimbursement_status,
 ]
