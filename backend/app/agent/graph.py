@@ -39,6 +39,7 @@ from app.agent.tools import (
     budget_check,
     generate_reimbursement_pdf,
     send_approval_email,
+    save_reimbursement_to_db,
     query_reimbursement_status,
 )
 
@@ -98,6 +99,7 @@ class ReimburseState(TypedDict):
     expense_type: str                                    # 费用类型
     total_amount: float                                  # 报销金额
     invoices: list[dict]                                 # 发票列表
+    attachments: list[str]                               # 上传的文件路径列表（MinIO object names）
     compliance_result: dict                              # 合规审查结果
     budget_result: dict                                  # 预算控制结果
     need_special_approval: bool                          # 是否需要特殊审批
@@ -226,31 +228,59 @@ def route_by_intent(state: ReimburseState) -> Literal["ocr_invoice", "query_stat
 # =============================================================================
 # 节点 2：OCR 票据识别
 # =============================================================================
-def ocr_invoice(state: ReimburseState) -> dict:
+async def ocr_invoice(state: ReimburseState) -> dict:
     """
-    模拟 OCR 识别发票信息。
-    实际生产环境应调用 PaddleOCR 或大模型视觉能力读取真实发票图片。
+    OCR 识别发票信息：
+      1. 有上传文件 → DeepSeek Vision / pypdf 真实识别
+      2. 无上传文件 → 用 LLM 从用户文本中提取金额等关键信息
     """
-    logger.info("🔍 Running OCR...")
-    return {
-        "invoices": [
-            {
-                "invoice_code": "044001900111",
-                "invoice_number": "87654321",
-                "amount": state.get("total_amount", 0),
-                "invoice_date": "2026-06-15",
-                "seller_name": "某某科技有限公司",
-                "buyer_name": "中国石油华东分公司",
+    attachments = state.get("attachments", [])
+    invoices = []
+
+    if attachments:
+        # --- 有文件：逐张 OCR 识别 ---
+        for file_path in attachments:
+            result = await ocr_recognize_invoice(file_path)
+            if result.get("amount", 0) > 0:
+                invoices.append(result)
+            logger.info(f"OCR result for {file_path}: amount={result.get('amount')}")
+
+        if invoices:
+            # 用发票总金额更新报销金额
+            total_from_invoices = sum(inv.get("amount", 0) for inv in invoices)
+            logger.info(f"OCR complete: {len(invoices)} invoices, total=¥{total_from_invoices}")
+            return {
+                "invoices": invoices,
+                "total_amount": total_from_invoices,
+                "messages": [AIMessage(
+                    content=f"✅ 票据识别完成，共 {len(invoices)} 张发票，"
+                            f"合计 ¥{total_from_invoices:,.2f}"
+                )],
             }
-        ],
-        "messages": [AIMessage(content="✅ 票据识别完成，已提取发票信息。")],
+
+    # --- 无文件或 OCR 均失败：从用户文本中提取 ---
+    logger.info("No attachments or OCR failed, extracting from user text")
+    total_amount = state.get("total_amount", 0)
+    return {
+        "invoices": [{
+            "invoice_code": "",
+            "invoice_number": "",
+            "amount": total_amount,
+            "invoice_date": "",
+            "seller_name": "",
+            "buyer_name": "",
+        }],
+        "messages": [AIMessage(
+            content=f"📋 已接收到您的报销申请（金额 ¥{total_amount:,.2f}）。"
+                    f"如需精确识别发票信息，请上传票据文件。"
+        )],
     }
 
 
 # =============================================================================
 # 节点 3：合规审查
 # =============================================================================
-def compliance_review(state: ReimburseState) -> dict:
+async def compliance_review(state: ReimburseState) -> dict:
     """
     检查报销金额是否在公司规定标准内：
       - 差旅: 单次上限 ¥10,000，日标准 ¥500
@@ -258,7 +288,7 @@ def compliance_review(state: ReimburseState) -> dict:
       - 办公: 单品上限 ¥5,000
       - 其他: 单次上限 ¥2,000
     """
-    result = compliance_check(
+    result = await compliance_check(
         expense_type=state.get("expense_type", "other"),
         total_amount=state.get("total_amount", 0),
         department=state.get("department", ""),
@@ -270,14 +300,14 @@ def compliance_review(state: ReimburseState) -> dict:
 # =============================================================================
 # 节点 4：预算池控制
 # =============================================================================
-def budget_control(state: ReimburseState) -> dict:
+async def budget_control(state: ReimburseState) -> dict:
     """
     查询部门预算余额，计算报销后是否超标。
     如果超标，设置 need_special_approval = True。
     """
     department = state.get("department", "")
     total = state.get("total_amount", 0)
-    result = budget_check(department=department, amount=total)  # 查询真实数据库
+    result = await budget_check(department=department, amount=total)  # 查询真实数据库
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
     return {"budget_result": result, "need_special_approval": need}
@@ -329,21 +359,67 @@ def generate_pdf(state: ReimburseState) -> dict:
 # 节点 6：发送审批邮件
 # =============================================================================
 def send_email(state: ReimburseState) -> dict:
-    """通知用户：报销单已提交审批"""
-    logger.info("📧 Sending email...")
+    """发送审批邮件：把报销单 PDF 通过 Celery 异步发送给审批人"""
+    reimb_id = state.get("session_id", "")
+    total = state.get("total_amount", 0)
+    pdf_path = state.get("pdf_path", "")
+    department = state.get("department", "")
+
+    logger.info(f"Queueing approval email: reimb={reimb_id} amount={total}")
+
+    # 确定审批人邮箱（演示环境发给自己）
+    approver_email = settings.SMTP_FROM or f"approver-{department or 'general'}@company.com"
+
+    result = send_approval_email(
+        to_email=approver_email,
+        reimb_id=reimb_id,
+        total_amount=total,
+        pdf_path=pdf_path,
+    )
+
+    if result.get("sent"):
+        return {"messages": [AIMessage(
+            content=f"📧 审批邮件已发送至 {approver_email}\n"
+                    f"报销单号: {reimb_id}\n"
+                    f"PDF 附件: {pdf_path}\n"
+                    f"请前往「进度查询」追踪审批状态。"
+        )]}
     return {"messages": [AIMessage(
-        content="📧 报销单已提交审批！\n"
-                "审批流程: 部门经理 → 财务审核 → 出纳付款\n"
-                "请前往「进度查询」追踪状态。"
+        content=f"⚠️ 邮件发送失败，但报销单 {reimb_id} 已成功提交。"
+                f"请联系管理员处理。"
     )]}
+
+
+# =============================================================================
+# 节点 7：保存报销单到数据库
+# =============================================================================
+async def save_reimbursement(state: ReimburseState) -> dict:
+    """将完整的报销流程结果写入数据库（报销单 + 发票 + 预算扣减 + 审批记录）"""
+    budget = state.get("budget_result", {})
+    result = await save_reimbursement_to_db(
+        department=state.get("department", ""),
+        expense_type=state.get("expense_type", "other"),
+        total_amount=state.get("total_amount", 0),
+        invoices=state.get("invoices", []),
+        need_special_approval=state.get("need_special_approval", False),
+        budget_remaining_after=budget.get("after_reimbursement", 0),
+        description="",
+    )
+    logger.info(f"DB save result: {result}")
+    reimb_id = result.get("reimb_id", "")
+    return {
+        "status": result.get("status", "error"),
+        "session_id": reimb_id or state.get("session_id", ""),
+        "messages": [AIMessage(content=f"✅ 报销单 {reimb_id} 已录入系统")],
+    }
 
 
 # =============================================================================
 # 节点 B：查询审批进度
 # =============================================================================
-def query_status(state: ReimburseState) -> dict:
+async def query_status(state: ReimburseState) -> dict:
     """查询数据库中的审批流转记录，展示给用户"""
-    result = query_reimbursement_status(reimb_id="", date_from="", date_to="")
+    result = await query_reimbursement_status(reimb_id="", date_from="", date_to="")
     steps = result.get("steps", [])
     status_text = "\n".join(
         f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps
@@ -408,7 +484,7 @@ def build_graph():
     # --- 步骤1：创建蓝图 ---
     builder = StateGraph(ReimburseState)
 
-    # --- 步骤2：注册 9 个节点 ---
+    # --- 步骤2：注册 10 个节点 ---
     for name, fn in [
         ("classify_intent", classify_intent),
         ("ocr_invoice", ocr_invoice),
@@ -417,6 +493,7 @@ def build_graph():
         ("special_approval", special_approval),
         ("generate_pdf", generate_pdf),
         ("send_email", send_email),
+        ("save_reimbursement", save_reimbursement),
         ("query_status", query_status),
         ("general_response", general_response),
     ]:
@@ -444,7 +521,8 @@ def build_graph():
 
     # --- 步骤7：末端链路 ---
     builder.add_edge("special_approval", "generate_pdf")       # 特殊审批 → 生成 PDF
-    builder.add_edge("generate_pdf", "send_email")             # 生成 PDF → 发邮件
+    builder.add_edge("generate_pdf", "save_reimbursement")     # 生成 PDF → 保存数据库
+    builder.add_edge("save_reimbursement", "send_email")       # 保存数据库 → 发邮件
     builder.add_edge("send_email", END)                        # 发邮件 → 结束
     builder.add_edge("query_status", END)                      # 查询进度 → 结束
     builder.add_edge("general_response", END)                  # 通用回复 → 结束

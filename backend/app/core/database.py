@@ -33,6 +33,8 @@ engine = create_async_engine(
     echo=settings.DEBUG,
     pool_size=10,
     max_overflow=20,
+    pool_pre_ping=True,       # 使用前先测试连接是否存活
+    connect_args={"timeout": 10},
 )
 
 # =============================================================================

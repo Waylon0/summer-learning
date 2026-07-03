@@ -14,8 +14,8 @@ app/services/email_svc.py — 邮件发送服务
 import aiosmtplib                                     # 异步 SMTP 客户端（不阻塞事件循环）
 from email.mime.multipart import MIMEMultipart         # 邮件容器（可包含正文+附件）
 from email.mime.text import MIMEText                   # 邮件正文（HTML/纯文本）
-from email.mime.base import MIMEBase                   # 邮件附件基类
-from email import encoders                             # Base64 编码（附件需要编码后传输）
+from email.mime.application import MIMEApplication      # PDF 附件专用
+from email.mime.base import MIMEBase
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -59,24 +59,20 @@ async def send_email(
     # --- 步骤4：添加附件（如果有）---
     if attachment_path:
         with open(attachment_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")  # 通用二进制类型
-            part.set_payload(f.read())                       # 设置附件内容
-            encoders.encode_base64(part)                     # Base64 编码
-            part.add_header(
-                "Content-Disposition",
-                f'attachment; filename="{attachment_name or "reimbursement.pdf"}"',
-            )
+            filename = attachment_name or "reimbursement.pdf"
+            part = MIMEApplication(f.read(), _subtype="pdf", name=filename)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
             msg.attach(part)
 
     # --- 步骤5：发送 ---
     try:
         await aiosmtplib.send(
             msg,
-            hostname=settings.SMTP_HOST,               # SMTP 服务器
-            port=settings.SMTP_PORT,                    # 端口（587=STARTTLS）
-            username=settings.SMTP_USER or None,        # 没有用户名就传 None
+            hostname=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            username=settings.SMTP_USER or None,
             password=settings.SMTP_PASSWORD or None,
-            use_tls=True,                               # 使用 TLS 加密
+            start_tls=True,           # 587 端口用 STARTTLS（先明文连接再升级加密）
         )
         return True
     except Exception as e:

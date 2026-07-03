@@ -191,3 +191,55 @@ class ApprovalRecord(Base):
             "comment": self.comment,
             "acted_at": self.acted_at.isoformat() if self.acted_at else None,
         }
+
+
+# =============================================================================
+# 表5：费用标准配置表
+# =============================================================================
+class ExpensePolicy(Base):
+    """费用报销标准配置（可从管理后台修改，无需重启服务）"""
+    __tablename__ = "expense_policy"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    expense_type: Mapped[str] = mapped_column(
+        String(32), unique=True, nullable=False,
+        comment="费用类型: travel/entertainment/office/other"
+    )
+    max_per_trip: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=True,
+        comment="单次上限（差旅）"
+    )
+    daily_limit: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=True,
+        comment="日标准（差旅）"
+    )
+    max_per_event: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=True,
+        comment="单次上限（招待）"
+    )
+    per_person_limit: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=True,
+        comment="人均上限（招待）"
+    )
+    max_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=True,
+        comment="单品上限（办公用品）"
+    )
+    max_per_request: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=True,
+        comment="单次上限（其他）"
+    )
+    description: Mapped[str] = mapped_column(String(128), nullable=True, comment="费用类型描述")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "expense_type": self.expense_type,
+            "max_per_trip": float(self.max_per_trip) if self.max_per_trip else None,
+            "daily_limit": float(self.daily_limit) if self.daily_limit else None,
+            "max_per_event": float(self.max_per_event) if self.max_per_event else None,
+            "per_person_limit": float(self.per_person_limit) if self.per_person_limit else None,
+            "max_per_item": float(self.max_per_item) if self.max_per_item else None,
+            "max_per_request": float(self.max_per_request) if self.max_per_request else None,
+            "description": self.description,
+        }

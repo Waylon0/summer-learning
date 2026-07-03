@@ -35,6 +35,7 @@ async def chat(request: ChatRequest):
         "expense_type": "",
         "total_amount": 0.0,
         "invoices": [],
+        "attachments": request.attachments or [],
         "compliance_result": {},
         "budget_result": {},
         "need_special_approval": False,
@@ -44,7 +45,7 @@ async def chat(request: ChatRequest):
 
     try:
         from app.agent.graph import reimburse_graph
-        result = reimburse_graph.invoke(initial_state)
+        result = await reimburse_graph.ainvoke(initial_state)
         last_msg = result["messages"][-1].content if result["messages"] else "处理完成"
 
         elapsed = (time.perf_counter() - t_start) * 1000
@@ -85,6 +86,7 @@ async def chat_stream(request: ChatRequest):
         "expense_type": "",
         "total_amount": 0.0,
         "invoices": [],
+        "attachments": request.attachments or [],
         "compliance_result": {},
         "budget_result": {},
         "need_special_approval": False,
@@ -95,13 +97,22 @@ async def chat_stream(request: ChatRequest):
     async def event_stream():
         try:
             from app.agent.graph import reimburse_graph
-            result = reimburse_graph.invoke(initial_state)
+            yield f"data: {json.dumps({'type': 'intent', 'intent': 'analyzing', 'session_id': session_id})}\n\n"
 
-            yield f"data: {json.dumps({'type': 'intent', 'intent': result.get('intent', ''), 'session_id': session_id})}\n\n"
+            # 使用 astream 按节点逐步推送
+            async for chunk in reimburse_graph.astream(initial_state, stream_mode="updates"):
+                node_name = list(chunk.keys())[0] if chunk else "unknown"
+                node_data = chunk.get(node_name, {})
 
-            for msg in result["messages"]:
-                if hasattr(msg, "content") and msg.content:
-                    yield f"data: {json.dumps({'type': 'message', 'content': msg.content})}\n\n"
+                # 推送该节点产生的 AI 消息
+                msgs = node_data.get("messages", [])
+                for msg in msgs:
+                    if hasattr(msg, "content") and msg.content:
+                        yield f"data: {json.dumps({'type': 'message', 'content': msg.content, 'node': node_name})}\n\n"
+
+                # 推送意图信息
+                if "intent" in node_data:
+                    yield f"data: {json.dumps({'type': 'intent', 'intent': node_data['intent'], 'session_id': session_id})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
         except Exception as e:

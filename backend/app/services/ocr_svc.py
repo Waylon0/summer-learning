@@ -89,6 +89,17 @@ async def upload_file(file_content: bytes, filename: str, content_type: str) -> 
     return object_name
 
 
+async def get_file_content(object_name: str) -> bytes:
+    """从 MinIO 下载文件内容（二进制）"""
+    client = get_minio_client()
+    response = client.get_object(settings.MINIO_BUCKET, object_name)
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
 async def get_file_url(object_name: str) -> str:
     """生成文件的临时下载链接（7天有效）"""
     client = get_minio_client()
