@@ -116,7 +116,7 @@ def _load_documents() -> list[dict]:
 
 
 def _build_index(docs: list[dict]) -> bool:
-    """构建 Chroma 向量索引"""
+    """构建或更新 Chroma 向量索引（增量更新）"""
     global _available
 
     if not docs:
@@ -133,18 +133,18 @@ def _build_index(docs: list[dict]) -> bool:
             settings=ChromaSettings(anonymized_telemetry=False),
         )
 
-        # 删除旧索引并重建
+        collection = None
         try:
-            client.delete_collection("reimbursement_knowledge")
+            collection = client.get_collection("reimbursement_knowledge")
         except Exception:
             pass
 
-        collection = client.create_collection(
-            name="reimbursement_knowledge",
-            metadata={"description": "企业报销知识库"},
-        )
+        if collection is None:
+            collection = client.create_collection(
+                name="reimbursement_knowledge",
+                metadata={"description": "企业报销知识库"},
+            )
 
-        # 批量添加文档
         ids = [f"chunk_{i}" for i in range(len(docs))]
         contents = [d["content"] for d in docs]
         metadatas = [d["metadata"] for d in docs]
@@ -152,11 +152,18 @@ def _build_index(docs: list[dict]) -> bool:
         batch_size = 50
         for i in range(0, len(docs), batch_size):
             end = min(i + batch_size, len(docs))
-            collection.add(
-                ids=ids[i:end],
-                documents=contents[i:end],
-                metadatas=metadatas[i:end],
-            )
+            try:
+                collection.upsert(
+                    ids=ids[i:end],
+                    documents=contents[i:end],
+                    metadatas=metadatas[i:end],
+                )
+            except Exception:
+                collection.add(
+                    ids=ids[i:end],
+                    documents=contents[i:end],
+                    metadatas=metadatas[i:end],
+                )
 
         _available = True
         logger.info(f"Knowledge index built: {len(docs)} chunks in ChromaDB")

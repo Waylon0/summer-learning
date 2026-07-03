@@ -65,6 +65,7 @@ from app.agent.prompts import (
     INTENT_CLASSIFY_PROMPT,
     ENTITY_EXTRACT_PROMPT,
     GENERAL_CHAT_PROMPT,
+    POLICY_INQUIRY_PROMPT,
     SLOT_FILLING_PROMPT,
 )
 
@@ -180,6 +181,7 @@ class ReimburseState(TypedDict):
     invoices: list[dict]
     pdf_path: str
     status: str
+    reimb_id: str
 
 
 # =============================================================================
@@ -286,7 +288,6 @@ async def classify_intent(state: ReimburseState) -> dict:
         desc = ctx.description
 
     # --- 步骤4：提取实体 + 检查缺失槽位 ---
-    from app.agent.entities import extract_entities, check_missing_slots
     entities = extract_entities(last_msg)
     # 合并上下文实体（新值优先）
     merged_entities = ReimbursementEntities(
@@ -607,7 +608,7 @@ async def save_to_db(state: ReimburseState) -> dict:
 
     return {
         "status": result.get("status", "pending"),
-        "session_id": reimb_id,
+        "reimb_id": reimb_id,
         "messages": [AIMessage(content=f"✅ 报销单已创建 (单号: {reimb_id})")],
     }
 
@@ -699,7 +700,7 @@ def generate_pdf(state: ReimburseState) -> dict:
     """生成 PDF 报销单"""
     total = state.get("total_amount", 0)
     path = generate_reimbursement_pdf(reimb_data={
-        "id": state.get("session_id", "unknown"),
+        "id": state.get("reimb_id", state.get("session_id", "unknown")),
         "department": state.get("department", ""),
         "expense_type": state.get("expense_type", ""),
         "total_amount": total,
@@ -708,10 +709,21 @@ def generate_pdf(state: ReimburseState) -> dict:
     return {"pdf_path": str(path), "messages": [AIMessage(content=f"📄 报销单已生成，总金额: ¥{total:,.2f}")]}
 
 
-def send_email(state: ReimburseState) -> dict:
+async def send_email(state: ReimburseState) -> dict:
     """发送审批邮件"""
+    reimb_id = state.get("reimb_id", state.get("session_id", "unknown"))
+    total = state.get("total_amount", 0)
+    pdf_path = state.get("pdf_path", "")
+
+    result = await send_approval_email(
+        to_email="approver@company.com",
+        reimb_id=reimb_id,
+        total_amount=total,
+        pdf_path=pdf_path,
+    )
+
     return {"messages": [AIMessage(
-        content="📧 报销单已提交审批！\n审批流程: 部门经理 → 财务审核 → 出纳付款\n请前往「进度查询」追踪状态。"
+        content=f"📧 报销单已提交审批！\n审批流程: 部门经理 → 财务审核 → 出纳付款\n请前往「进度查询」追踪状态。"
     )]}
 
 

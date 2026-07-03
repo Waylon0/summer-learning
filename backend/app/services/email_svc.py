@@ -16,6 +16,7 @@ from email.mime.multipart import MIMEMultipart         # 邮件容器（可包�
 from email.mime.text import MIMEText                   # 邮件正文（HTML/纯文本）
 from email.mime.application import MIMEApplication      # PDF 附件专用
 from email.mime.base import MIMEBase
+from loguru import logger
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -76,6 +77,5 @@ async def send_email(
         )
         return True
     except Exception as e:
-        # 发送失败时打印错误但让程序继续运行
-        print(f"[Email Error] {e}")
+        logger.error(f"Email send failed: {e}")
         return False

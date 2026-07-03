@@ -1,14 +1,17 @@
 """
 =============================================================================
-app/api/v1/chat.py — Agent 对话 API（SSE 流式）
+app/api/v1/chat.py — Agent 对话 API（非流式 + SSE 流式）
 =============================================================================
-统一使用 SSE (Server-Sent Events) 流式输出，实时推送工作流的每一步进展。
+两个端点:
+  POST /api/v1/chat         — 非流式 JSON 响应（ChatResponse）
+  POST /api/v1/chat/stream  — SSE 流式推送
 
-Event 类型:
+Event 类型 (SSE):
   start   — 对话开始（含 session_id）
   intent  — 意图识别结果
   step    — 工作流节点执行进度
   message — Agent 回复内容片段
+  token   — 逐字符流式推送
   result  — 完整结果摘要（intent + entities）
   done    — 对话完成
   error   — 异常信息
@@ -21,12 +24,12 @@ Event 类型:
 import uuid
 import json
 import time
-from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from langchain_core.messages import HumanMessage, AIMessage
 from loguru import logger
 
-from app.schemas.reimbursement import ChatRequest
+from app.schemas.reimbursement import ChatRequest, ChatResponse
 from app.core.exceptions import AgentExecutionError
 from app.agent.sessions import get_session_store, SessionContext
 
@@ -65,6 +68,7 @@ def _build_initial_state(request: ChatRequest, ctx: SessionContext, is_contextua
         "invoices": [],
         "pdf_path": "",
         "status": "",
+        "reimb_id": "",
     }
 
 
@@ -95,31 +99,114 @@ def _sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-@router.post("/chat")
-async def chat(request: ChatRequest):
-    """
-    SSE 流式对话接口。
+async def _run_workflow(initial_state: dict) -> dict:
+    """执行 LangGraph 工作流，收集最终状态"""
+    from app.agent.graph import reimburse_graph
 
-    接入方式（JavaScript）:
-      const es = new EventSource("/api/v1/chat", { method: "POST", body: ... });
-      es.addEventListener("message", (e) => console.log(e.data));
-      es.addEventListener("done", () => es.close());
+    final_state = {}
+    async for chunk in reimburse_graph.astream(initial_state, stream_mode="updates"):
+        for _node_name, node_output in chunk.items():
+            if isinstance(node_output, dict):
+                final_state.update(node_output)
+    return final_state
+
+
+def _collect_reply(final_state: dict) -> str:
+    """从最终状态中提取回复文本"""
+    if final_state.get("messages"):
+        for m in reversed(final_state["messages"]):
+            if hasattr(m, "content") and m.content:
+                return str(m.content)
+    return ""
+
+
+# =============================================================================
+# POST /api/v1/chat — 非流式 JSON 响应
+# =============================================================================
+@router.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest, req: Request):
+    """
+    非流式对话接口，返回完整 ChatResponse。
+
+    响应格式:
+      {
+        "reply": "✅ 报销单已创建 (单号: abc123)",
+        "session_id": "abc123",
+        "intent": "reimbursement_create",
+        "entities": {"department": "技术部", "expense_type": "travel", "total_amount": 1500.0},
+        "tool_calls": null
+      }
+
+    如果前端需要 SSE 流式，请使用 POST /api/v1/chat/stream
+    """
+    accept = req.headers.get("accept", "")
+    if "text/event-stream" in accept:
+        return await _chat_stream(request)
+
+    session_id = request.session_id or uuid.uuid4().hex
+    t_start = time.perf_counter()
+
+    ctx = get_session_store().get_or_create(session_id)
+    is_contextual = ctx.is_filling_slots()
+    initial_state = _build_initial_state(request, ctx, is_contextual)
+
+    logger.info(
+        f"Chat(non-stream): session={session_id} turns={ctx.turn_count} "
+        f"contextual={is_contextual} msg={request.message[:80]}"
+    )
+
+    try:
+        final_state = await _run_workflow(initial_state)
+    except Exception as e:
+        logger.error(f"Agent execution failed: {e}", exc_info=True)
+        raise AgentExecutionError(detail=str(e))
+
+    reply = _collect_reply(final_state)
+    _save_context(session_id, final_state, request.message, reply)
+
+    elapsed_ms = round((time.perf_counter() - t_start) * 1000)
+    logger.info(f"Chat done: session={session_id} elapsed={elapsed_ms}ms")
+
+    return ChatResponse(
+        reply=reply,
+        session_id=session_id,
+        intent=final_state.get("intent", ""),
+        entities={
+            "department": final_state.get("department", ""),
+            "expense_type": final_state.get("expense_type", ""),
+            "total_amount": final_state.get("total_amount", 0),
+        },
+    )
+
+
+# =============================================================================
+# POST /api/v1/chat/stream — SSE 流式推送
+# =============================================================================
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE 流式对话接口（POST /api/v1/chat/stream）"""
+    return await _chat_stream(request)
+
+
+async def _chat_stream(request: ChatRequest):
+    """
+    SSE 流式对话核心逻辑。
 
     Event 流示例:
       event: start
       data: {"session_id":"abc123","timestamp":"..."}
 
-      event: intent
-      data: {"intent":"new_reimbursement","sub":"travel_expense","confidence":0.95}
-
       event: step
-      data: {"node":"entity_extraction","status":"completed"}
+      data: {"node":"classify_intent"}
 
-      event: message
-      data: {"content":"✅ 票据识别完成，已提取发票信息。"}
+      event: token
+      data: {"content":"✅","node":"save_to_db"}
+
+      event: intent
+      data: {"intent":"reimbursement_create","sub_intent":"travel_expense"}
 
       event: result
-      data: {"intent":"new_reimbursement","entities":{"department":"技术部",...}}
+      data: {"intent":"reimbursement_create","entities":{...},"reply_preview":"..."}
 
       event: done
       data: {"session_id":"abc123","elapsed_ms":2340}
@@ -127,34 +214,29 @@ async def chat(request: ChatRequest):
     session_id = request.session_id or uuid.uuid4().hex
     t_start = time.perf_counter()
 
-    # --- 加载上下文 ---
     ctx = get_session_store().get_or_create(session_id)
     is_contextual = ctx.is_filling_slots()
     initial_state = _build_initial_state(request, ctx, is_contextual)
 
     logger.info(
-        f"Chat: session={session_id} turns={ctx.turn_count} "
+        f"Chat(stream): session={session_id} turns={ctx.turn_count} "
         f"contextual={is_contextual} msg={request.message[:80]}"
     )
 
     async def event_stream():
         try:
-            # --- Event: start ---
             yield _sse_event("start", {
                 "session_id": session_id,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
 
-            # --- 流式执行工作流：每个节点完成后立即推送 ---
             from app.agent.graph import reimburse_graph
 
             final_state = {}
             all_messages = set()
 
             async for chunk in reimburse_graph.astream(initial_state, stream_mode="updates"):
-                # chunk 格式: {"node_name": {"messages": [...], "department": ..., ...}}
                 for node_name, node_output in chunk.items():
-                    # 推送节点名作为进度
                     if node_name:
                         yield _sse_event("step", {"node": node_name})
 
@@ -163,40 +245,26 @@ async def chat(request: ChatRequest):
                         for msg in msgs:
                             if hasattr(msg, "content") and msg.content:
                                 content = str(msg.content)
-                                # 按字符逐个推送，实现打字机效果
-                                # 用 hash 去重，避免重复推送
                                 msg_hash = hash(content)
                                 if msg_hash not in all_messages:
                                     all_messages.add(msg_hash)
-                                    # 逐字符流式推送
                                     for i in range(0, len(content), 1):
                                         yield _sse_event("token", {
                                             "content": content[i],
                                             "node": node_name,
                                         })
-                                    # 每条消息结束后发送换行
                                     yield _sse_event("token", {"content": "\n"})
 
-                    # 累积最终状态
                     final_state.update(node_output)
 
-            # --- 收集完整回复 ---
-            last_msg = ""
-            if final_state.get("messages"):
-                for m in reversed(final_state["messages"]):
-                    if hasattr(m, "content") and m.content:
-                        last_msg = str(m.content)
-                        break
+            reply = _collect_reply(final_state)
+            _save_context(session_id, final_state, request.message, reply)
 
-            _save_context(session_id, final_state, request.message, last_msg)
-
-            # --- Event: intent ---
             yield _sse_event("intent", {
                 "intent": final_state.get("intent", ""),
                 "sub_intent": final_state.get("sub_intent", ""),
             })
 
-            # --- Event: result ---
             yield _sse_event("result", {
                 "intent": final_state.get("intent", ""),
                 "entities": {
@@ -204,10 +272,9 @@ async def chat(request: ChatRequest):
                     "expense_type": final_state.get("expense_type", ""),
                     "total_amount": final_state.get("total_amount", 0),
                 },
-                "reply_preview": last_msg[:200],
+                "reply_preview": reply[:200],
             })
 
-            # --- Event: done ---
             elapsed = (time.perf_counter() - t_start) * 1000
             yield _sse_event("done", {
                 "session_id": session_id,
@@ -228,6 +295,5 @@ async def chat(request: ChatRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*",
         },
     )

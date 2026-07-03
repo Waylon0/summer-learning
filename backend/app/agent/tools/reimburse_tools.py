@@ -305,23 +305,38 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.graphics.barcode import code128
 
-    # ---- 注册中文字体 ----
-    _font_dir = _os.path.join(_os.environ.get("WINDIR", "C:/Windows"), "Fonts")
-    _font_title = _os.path.join(_font_dir, "simhei.ttf")
-    _font_body = _os.path.join(_font_dir, "msyh.ttc")
+    # ---- 注册中文字体（跨平台）----
+    _font_candidates = [
+        # Linux
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        # macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        # Windows
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+    ]
     _font_exists = _os.path.exists
 
-    if _font_exists(_font_title):
-        pdfmetrics.registerFont(TTFont("SimHei", _font_title))
-        title_font = "SimHei"
-    else:
-        title_font = "Helvetica"
-
-    if _font_exists(_font_body):
-        pdfmetrics.registerFont(TTFont("MSYH", _font_body))
-        body_font = "MSYH"
-    else:
-        body_font = title_font
+    title_font = "Helvetica"
+    body_font = "Helvetica"
+    for fp in _font_candidates:
+        if _font_exists(fp):
+            try:
+                fn = _os.path.splitext(_os.path.basename(fp))[0].replace(" ", "").replace("-", "")
+                pdfmetrics.registerFont(TTFont(fn, fp))
+                if title_font == "Helvetica":
+                    title_font = fn
+                body_font = fn
+                break
+            except Exception:
+                continue
 
     reimb_id = reimb_data.get("id", "unknown")
     path = tempfile.mktemp(suffix=f"_reimb_{reimb_id}.pdf")
@@ -459,7 +474,7 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
 # =============================================================================
 # 工具 5：发送审批邮件（同步，Celery 任务提交后立即返回）
 # =============================================================================
-def send_approval_email(to_email: str, reimb_id: str, total_amount: float, pdf_path: str = "") -> dict:
+async def send_approval_email(to_email: str, reimb_id: str, total_amount: float, pdf_path: str = "") -> dict:
     """发送审批通知邮件（优先 Celery 异步，不可用时同步发送）"""
     logger.info(f"Email to={to_email} reimb={reimb_id} amount={total_amount} pdf={pdf_path}")
 
@@ -472,17 +487,15 @@ def send_approval_email(to_email: str, reimb_id: str, total_amount: float, pdf_p
         logger.info("Email queued via Celery")
     except Exception as e:
         logger.warning(f"Celery unavailable ({e}), trying direct send...")
-        # Celery 不可用时，同步直接发送
-        import asyncio
         try:
             from app.services.email_svc import send_email
             subject = f"【报销审批】报销单 {reimb_id} 待审批 - ¥{total_amount:,.2f}"
             body = f"<h2>报销审批通知</h2><p>报销单编号: <b>{reimb_id}</b></p><p>报销金额: <b>¥{total_amount:,.2f}</b></p><p>请登录系统进行审批。</p>"
-            asyncio.run(send_email(
+            await send_email(
                 to_email, subject, body,
                 pdf_path if pdf_path else None,
                 f"报销单_{reimb_id}.pdf",
-            ))
+            )
             sent = True
             logger.info(f"Email sent directly to {to_email}")
         except Exception as e2:
