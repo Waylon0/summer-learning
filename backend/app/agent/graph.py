@@ -498,9 +498,10 @@ def policy_check(state: ReimburseState) -> dict:
 # =============================================================================
 def budget_control(state: ReimburseState) -> dict:
     """查询部门预算，判断是否超标"""
+    import asyncio
     department = state.get("department", "")
     total = state.get("total_amount", 0)
-    result = budget_check(department=department, amount=total)
+    result = asyncio.run(budget_check(department=department, amount=total))
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
     return {"budget_result": result, "need_special_approval": need}
@@ -604,7 +605,8 @@ def send_email(state: ReimburseState) -> dict:
 
 def query_status(state: ReimburseState) -> dict:
     """查询审批进度"""
-    result = query_reimbursement_status(reimb_id="", date_from="", date_to="")
+    import asyncio
+    result = asyncio.run(query_reimbursement_status(reimb_id="", date_from="", date_to=""))
     steps = result.get("steps", [])
     text = "\n".join(f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps)
     return {"messages": [AIMessage(content=f"📋 状态: {result.get('status','未知')}\n{text}")]}
