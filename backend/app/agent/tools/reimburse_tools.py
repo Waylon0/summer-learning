@@ -511,59 +511,66 @@ async def save_reimbursement_to_db(
     from sqlalchemy import text
 
     reimb_id = uuid.uuid4().hex[:12]
-    total_dec = Decimal(str(total_amount))
-    budget_after = Decimal(str(budget_remaining_after)) if budget_remaining_after else None
+    # SQLite 不支持 Decimal 类型绑参，统一转 float
+    total_val = float(total_amount)
+    budget_after = float(budget_remaining_after) if budget_remaining_after else None
 
-    async with engine.begin() as conn:
-        await conn.execute(text("""
-            INSERT INTO reimbursements
-            (id, user_id, user_name, department, expense_type, total_amount,
-             description, invoice_count, need_special_approval,
-             budget_remaining_after, status)
-            VALUES (:id, :uid, :uname, :dept, :etype, :amount,
-                    :desc, :icount, :special, :remaining, 'pending')
-        """), {
-            "id": reimb_id, "uid": user_id, "uname": user_name,
-            "dept": department, "etype": expense_type, "amount": total_dec,
-            "desc": description, "icount": len(invoices),
-            "special": need_special_approval, "remaining": budget_after,
-        })
-
-        for inv in invoices:
+    try:
+        async with engine.begin() as conn:
             await conn.execute(text("""
-                INSERT INTO invoices
-                (id, reimbursement_id, invoice_code, invoice_number, amount,
-                 invoice_date, seller_name, buyer_name, file_path)
-                VALUES (:id, :rid, :code, :num, :amount,
-                        :date, :seller, :buyer, :fpath)
+                INSERT INTO reimbursements
+                (id, user_id, user_name, department, expense_type, total_amount,
+                 description, invoice_count, need_special_approval,
+                 budget_remaining_after, status)
+                VALUES (:id, :uid, :uname, :dept, :etype, :amount,
+                        :desc, :icount, :special, :remaining, 'pending')
             """), {
-                "id": uuid.uuid4().hex[:12], "rid": reimb_id,
-                "code": inv.get("invoice_code") or "",
-                "num": inv.get("invoice_number") or "",
-                "amount": Decimal(str(inv.get("amount", 0) or 0)),
-                "date": inv.get("invoice_date") or None,
-                "seller": inv.get("seller_name") or "",
-                "buyer": inv.get("buyer_name") or "",
-                "fpath": inv.get("file_path") or "",
+                "id": reimb_id, "uid": user_id, "uname": user_name,
+                "dept": department, "etype": expense_type, "amount": total_val,
+                "desc": description or "", "icount": len(invoices),
+                "special": need_special_approval, "remaining": budget_after,
             })
 
-        await conn.execute(text("""
-            INSERT INTO approval_records
-            (id, reimbursement_id, approver, step, action, comment)
-            VALUES (:id, :rid, '部门经理', 1, 'pending', '报销单已提交，等待审批')
-        """), {"id": uuid.uuid4().hex[:12], "rid": reimb_id})
+            for inv in invoices:
+                inv_amount = float(inv.get("amount", 0) or 0)
+                await conn.execute(text("""
+                    INSERT INTO invoices
+                    (id, reimbursement_id, invoice_code, invoice_number, amount,
+                     invoice_date, seller_name, buyer_name, file_path)
+                    VALUES (:id, :rid, :code, :num, :amount,
+                            :date, :seller, :buyer, :fpath)
+                """), {
+                    "id": uuid.uuid4().hex[:12], "rid": reimb_id,
+                    "code": inv.get("invoice_code") or "",
+                    "num": inv.get("invoice_number") or "",
+                    "amount": inv_amount,
+                    "date": inv.get("invoice_date") or None,
+                    "seller": inv.get("seller_name") or "",
+                    "buyer": inv.get("buyer_name") or "",
+                    "fpath": inv.get("file_path") or "",
+                })
 
-        await conn.execute(text("""
-            UPDATE department_budget
-            SET used_amount = used_amount + :amount
-            WHERE department = :dept
-        """), {"amount": total_dec, "dept": department})
+            await conn.execute(text("""
+                INSERT INTO approval_records
+                (id, reimbursement_id, approver, step, action, comment)
+                VALUES (:id, :rid, '部门经理', 1, 'pending', '报销单已提交，等待审批')
+            """), {"id": uuid.uuid4().hex[:12], "rid": reimb_id})
 
-    logger.info(
-        f"报销单已入库: id={reimb_id} dept={department} "
-        f"amount={total_amount} special={need_special_approval}"
-    )
-    return {"reimb_id": reimb_id, "status": "pending"}
+            await conn.execute(text("""
+                UPDATE department_budget
+                SET used_amount = used_amount + :amount
+                WHERE department = :dept
+            """), {"amount": total_val, "dept": department})
+
+        logger.info(
+            f"报销单已入库: id={reimb_id} dept={department} "
+            f"amount={total_amount} special={need_special_approval}"
+        )
+        return {"reimb_id": reimb_id, "status": "pending"}
+
+    except Exception as e:
+        logger.error(f"数据库写入失败: {e}")
+        raise
 
 
 # =============================================================================
