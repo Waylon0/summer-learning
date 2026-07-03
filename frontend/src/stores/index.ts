@@ -8,6 +8,7 @@ interface AppState {
 
   setSessionId: (id: string | null) => void;
   addMessage: (msg: ChatMessage) => void;
+  updateLastMessage: (msg: ChatMessage) => void;
   appendToLastAssistant: (content: string) => void;
   setLastAssistantEntities: (intent?: string, entities?: Record<string, unknown>) => void;
   clearMessages: () => void;
@@ -21,6 +22,14 @@ export const useAppStore = create<AppState>((set) => ({
 
   setSessionId: (id) => set({ sessionId: id }),
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+  updateLastMessage: (msg) =>
+    set((s) => {
+      const msgs = [...s.messages];
+      if (msgs.length > 0) {
+        msgs[msgs.length - 1] = msg;
+      }
+      return { messages: msgs };
+    }),
   appendToLastAssistant: (content) =>
     set((s) => {
       const msgs = [...s.messages];

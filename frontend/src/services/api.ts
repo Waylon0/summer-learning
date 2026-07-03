@@ -11,8 +11,10 @@ import type {
   ApiError,
 } from '@/types';
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
+  baseURL: API_BASE,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -45,8 +47,62 @@ export async function healthCheck(): Promise<HealthStatus> {
 // ========== Agent 对话 ==========
 
 export async function sendChatMessage(data: ChatRequest): Promise<ChatResponse> {
-  const res = await api.post<ChatResponse>('/chat', data);
+  // 流式模式下改用 SSE，此函数保留兼容
+  const res = await api.post<ChatResponse>('/chat', data, {
+    headers: { 'Accept': 'application/json' },
+    responseType: 'json',
+  });
   return res.data;
+}
+
+/**
+ * SSE 流式对话 —— 通过 fetch + ReadableStream 接收事件
+ *
+ * 用法:
+ *   for await (const event of sendChatMessageStream({ message: "你好" })) {
+ *     if (event.type === 'message') console.log(event.content);
+ *   }
+ */
+export async function* sendChatMessageStream(data: ChatRequest) {
+  const response = await fetch(`${API_BASE}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ message: '请求失败' }));
+    throw new Error(err.message || err.detail || `HTTP ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('浏览器不支持流式读取');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let currentEvent = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        try {
+          const payload = JSON.parse(line.slice(6));
+          yield { type: currentEvent || 'message', ...payload };
+        } catch {
+          // 解析失败跳过
+        }
+      }
+    }
+  }
 }
 
 // ========== 报销单 CRUD ==========

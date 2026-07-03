@@ -58,7 +58,7 @@ INTENT_CLASSIFY_PROMPT = """你是一个报销意图分类器，分析用户输�
 # 实体提取 — 精简
 # =============================================================================
 ENTITY_EXTRACT_PROMPT = """从用户输入中提取报销相关的结构化信息，输出 JSON。
-
+ 
 提取字段（只输出存在的）:
 - department: 部门名
 - expense_type: travel/entertainment/office/other
