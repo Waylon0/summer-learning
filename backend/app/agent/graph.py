@@ -120,12 +120,28 @@ def _get_llm():
 
 
 def _try_llm(messages: list) -> str:
-    """尝试调用 LLM，失败静默降级"""
+    """尝试调用 LLM，失败静默降级（同步版）"""
     global _llm_available
     if _llm_available is False:
         return ""
     try:
         resp = _get_llm().invoke(messages)
+        _llm_available = True
+        return resp.content
+    except Exception as e:
+        if _llm_available is None:
+            logger.warning(f"LLM unavailable: {e}")
+        _llm_available = False
+        return ""
+
+
+async def _try_llm_async(messages: list) -> str:
+    """尝试调用 LLM，失败静默降级（异步版）"""
+    global _llm_available
+    if _llm_available is False:
+        return ""
+    try:
+        resp = await _get_llm().ainvoke(messages)
         _llm_available = True
         return resp.content
     except Exception as e:
@@ -169,7 +185,7 @@ class ReimburseState(TypedDict):
 # =============================================================================
 # 节点 1：专业意图分类
 # =============================================================================
-def classify_intent(state: ReimburseState) -> dict:
+async def classify_intent(state: ReimburseState) -> dict:
     """
     多级意图分类 —— 上下文感知版。
 
@@ -243,8 +259,8 @@ def classify_intent(state: ReimburseState) -> dict:
     llm_prompt = INTENT_CLASSIFY_PROMPT
     if context_summary:
         llm_prompt += f"\n\n[对话上下文]\n{context_summary}\n请注意：当前消息可能是对上一轮Agent提问的回答。"
-    llm_response = _try_llm([
-        HumanMessage(content=f"{llm_prompt}\n\n用户输入: {last_msg}\n\nJSON:")
+    llm_response = await _try_llm_async([
+        HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
     ])
     if llm_response:
         content = llm_response.strip().lstrip("```json").rstrip("```").strip()
@@ -325,7 +341,7 @@ def route_by_intent(
 # =============================================================================
 # 节点 2：实体提取 + 前置校验 + 缺失反问
 # =============================================================================
-def entity_extraction(state: ReimburseState) -> dict:
+async def entity_extraction(state: ReimburseState) -> dict:
     """
     专业实体提取节点 —— 上下文感知版。
 
@@ -351,7 +367,7 @@ def entity_extraction(state: ReimburseState) -> dict:
     entity_prompt = ENTITY_EXTRACT_PROMPT
     if ctx and ctx.get_context_summary():
         entity_prompt += f"\n\n[上下文: {ctx.get_context_summary()}]\n当前消息可能是对缺失信息的补充。"
-    llm_response = _try_llm([
+    llm_response = await _try_llm_async([
         HumanMessage(content=f"{entity_prompt}\n\n用户输入: {last_msg}\n\nJSON:")
     ])
     if llm_response:
@@ -398,7 +414,7 @@ def route_after_extraction(state: ReimburseState) -> Literal["slot_filling", "pr
     return "slot_filling" if missing else "pre_validation"
 
 
-def slot_filling(state: ReimburseState) -> dict:
+async def slot_filling(state: ReimburseState) -> dict:
     """缺失信息反问节点 —— 友好地向用户询问缺失的必要字段"""
     missing = state.get("missing_slots", [])
     if not missing:
@@ -417,7 +433,7 @@ def slot_filling(state: ReimburseState) -> dict:
 
     missing_names = [field_names.get(m, m) for m in missing[:2]]  # 最多提醒 2 个
 
-    llm_response = _try_llm([
+    llm_response = await _try_llm_async([
         HumanMessage(content=SLOT_FILLING_PROMPT.format(
             missing_fields=", ".join(missing_names)
         ))
@@ -527,11 +543,11 @@ def policy_check(state: ReimburseState) -> dict:
 # =============================================================================
 # 节点 6：预算控制
 # =============================================================================
-def budget_control(state: ReimburseState) -> dict:
+async def budget_control(state: ReimburseState) -> dict:
     """查询部门预算，判断是否超标"""
     department = state.get("department", "")
     total = state.get("total_amount", 0)
-    result = _run_async(budget_check(department=department, amount=total))
+    result = await budget_check(department=department, amount=total)
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
     return {"budget_result": result, "need_special_approval": need}
@@ -555,7 +571,7 @@ def route_after_budget(state: ReimburseState) -> Literal["save_to_db", "rejectio
 # =============================================================================
 # 节点 7：保存报销单到数据库
 # =============================================================================
-def save_to_db(state: ReimburseState) -> dict:
+async def save_to_db(state: ReimburseState) -> dict:
     """
     将报销单、发票明细、审批记录写入数据库，同步更新部门预算已使用金额。
 
@@ -576,7 +592,7 @@ def save_to_db(state: ReimburseState) -> dict:
         f"amount={total_amount} special={need_special}"
     )
 
-    result = _run_async(save_reimbursement_to_db(
+    result = await save_reimbursement_to_db(
         department=department,
         expense_type=expense_type,
         total_amount=total_amount,
@@ -584,7 +600,7 @@ def save_to_db(state: ReimburseState) -> dict:
         need_special_approval=need_special,
         budget_remaining_after=budget_remaining,
         description=description,
-    ))
+    )
 
     reimb_id = result.get("reimb_id", "")
     logger.info(f"Saved: reimb_id={reimb_id}")
@@ -606,7 +622,7 @@ def route_after_save(state: ReimburseState) -> Literal["special_approval", "gene
 # =============================================================================
 # 节点 7：政策咨询
 # =============================================================================
-def policy_lookup(state: ReimburseState) -> dict:
+async def policy_lookup(state: ReimburseState) -> dict:
     """
     政策咨询节点 — RAG 增强版。
 
@@ -626,13 +642,13 @@ def policy_lookup(state: ReimburseState) -> dict:
     logger.info(f"RAG: retrieved {len(kb_context)} chars of context")
 
     if kb_context:
-        llm_response = _try_llm([
+        llm_response = await _try_llm_async([
             HumanMessage(content=POLICY_INQUIRY_PROMPT.format(
                 context=kb_context, user_query=last_msg
             ))
         ])
     else:
-        llm_response = _try_llm([
+        llm_response = await _try_llm_async([
             HumanMessage(content=f"{SYSTEM_PROMPT}\n\n用户提问: {last_msg}")
         ])
 
@@ -699,9 +715,9 @@ def send_email(state: ReimburseState) -> dict:
     )]}
 
 
-def query_status(state: ReimburseState) -> dict:
+async def query_status(state: ReimburseState) -> dict:
     """查询审批进度"""
-    result = _run_async(query_reimbursement_status(reimb_id="", date_from="", date_to=""))
+    result = await query_reimbursement_status(reimb_id="", date_from="", date_to="")
     steps = result.get("steps", [])
     text = "\n".join(f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps)
     return {"messages": [AIMessage(content=f"📋 状态: {result.get('status','未知')}\n{text}")]}
@@ -713,7 +729,7 @@ def approval_process(state: ReimburseState) -> dict:
     return {"messages": [AIMessage(content="审批操作已记录，报销单状态已更新。")]}
 
 
-def general_response(state: ReimburseState) -> dict:
+async def general_response(state: ReimburseState) -> dict:
     """
     通用回复 — RAG 增强版。
 
@@ -726,7 +742,7 @@ def general_response(state: ReimburseState) -> dict:
     kb_context = build_context_for_llm(last_msg, top_k=2)
 
     prompt = GENERAL_CHAT_PROMPT.format(context=kb_context or "无特定知识库内容", user_query=last_msg)
-    llm_response = _try_llm([HumanMessage(content=prompt)])
+    llm_response = await _try_llm_async([HumanMessage(content=prompt)])
 
     if llm_response:
         return {"messages": [AIMessage(content=llm_response)]}
