@@ -1,0 +1,39 @@
+# ============================================================================
+# docker-compose.override.yml — 本地开发覆盖配置
+# ============================================================================
+# Docker Compose 会自动合并此文件 (无需 -f 参数）。
+# 开发时启用代码热重载 + 调试端口。
+# 生产部署时删除或重命名此文件。
+# ============================================================================
+
+services:
+  backend:
+    volumes:
+      # 挂载源码目录实现热重载
+      - ./backend:/app
+      # 排除 venv 和缓存，使用镜像内安装的依赖
+      - /app/.venv
+      - /app/__pycache__
+      - upload_data:/app/data/uploads
+    environment:
+      LOG_LEVEL: DEBUG
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  celery-worker:
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+      - /app/__pycache__
+      - upload_data:/app/data/uploads
+    environment:
+      LOG_LEVEL: DEBUG
+
+  frontend:
+    volumes:
+      # 挂载源码实现热重载 (HMR)
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      - frontend_node_modules:/app/node_modules
