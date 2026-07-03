@@ -120,6 +120,10 @@ class ReimburseState(TypedDict):
     description: str
     entities: dict
     missing_slots: list[str]
+    # 上下文
+    session_id: str
+    is_contextual_fill: bool           # 是否是在补充上轮的缺失信息
+    context_summary: str                # 历史上下文摘要
     # 校验
     validation_result: dict
     compliance_result: dict
@@ -129,7 +133,6 @@ class ReimburseState(TypedDict):
     invoices: list[dict]
     pdf_path: str
     status: str
-    session_id: str
 
 
 # =============================================================================
@@ -137,19 +140,80 @@ class ReimburseState(TypedDict):
 # =============================================================================
 def classify_intent(state: ReimburseState) -> dict:
     """
-    多级意图分类 —— 先规则关键词匹配，LLM 可用时再增强。
+    多级意图分类 —— 上下文感知版。
 
-    返回一级意图 + 二级子场景 + 置信度 + 缺失槽位。
+    流程:
+      1. 读取上下文摘要（如果有历史会话）
+      2. 检查是否在补充上轮缺失信息 → 直接继承上轮意图
+      3. 规则关键词匹配
+      4. LLM 增强（如果可用）
     """
     messages = state["messages"]
     last_msg = messages[-1].content if messages else ""
+    context_summary = state.get("context_summary", "")
+    is_contextual = state.get("is_contextual_fill", False)
+
+    # --- 步骤0：上下文推断 ---
+    # 如果用户在补充上轮的缺失信息（如回复"哪个部门？"→"技术部"）
+    # 直接继承上一轮的意图，不重新分类
+    session_id = state.get("session_id", "")
+    from app.agent.sessions import get_session_store, infer_intent_from_context
+    ctx = get_session_store().get_context(session_id)
+    contextual_intent = None
+    if ctx:
+        contextual_intent = infer_intent_from_context(last_msg, ctx)
+        if contextual_intent and contextual_intent.get("action") == "fill_slots":
+            logger.info(f"Contextual slot-filling detected: '{last_msg}' continues intent={contextual_intent['primary']}")
+            # 继承上一轮意图
+            return {
+                "intent": contextual_intent["primary"],
+                "sub_intent": contextual_intent.get("sub", "none"),
+                "intent_result": contextual_intent,
+                "department": ctx.department,
+                "expense_type": ctx.expense_type,
+                "total_amount": ctx.total_amount,
+                "description": ctx.description,
+                "entities": {
+                    "department": ctx.department,
+                    "expense_type": ctx.expense_type,
+                    "total_amount": ctx.total_amount,
+                },
+                "missing_slots": ctx.missing_slots,
+                "session_id": session_id,
+                "is_contextual_fill": True,
+                "context_summary": ctx.get_context_summary(),
+            }
+        elif contextual_intent and contextual_intent.get("action") == "confirm":
+            logger.info(f"Contextual confirmation: '{last_msg}' confirms intent={contextual_intent['primary']}")
+            return {
+                "intent": contextual_intent["primary"],
+                "sub_intent": contextual_intent.get("sub", "none"),
+                "intent_result": contextual_intent,
+                "department": ctx.department,
+                "expense_type": ctx.expense_type,
+                "total_amount": ctx.total_amount,
+                "description": ctx.description,
+                "entities": {
+                    "department": ctx.department,
+                    "expense_type": ctx.expense_type,
+                    "total_amount": ctx.total_amount,
+                },
+                "missing_slots": [],
+                "session_id": session_id,
+                "is_contextual_fill": False,
+                "context_summary": ctx.get_context_summary(),
+            }
 
     # --- 步骤1：规则关键词匹配 ---
+    # 如果有上下文，在提示词中注入上下文信息
     intent_result = classify_by_keywords(last_msg)
 
     # --- 步骤2：LLM 增强（如果可用）---
+    llm_prompt = INTENT_CLASSIFY_PROMPT
+    if context_summary:
+        llm_prompt += f"\n\n[对话上下文]\n{context_summary}\n请注意：当前消息可能是对上一轮Agent提问的回答。"
     llm_response = _try_llm([
-        HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
+        HumanMessage(content=f"{llm_prompt}\n\n用户输入: {last_msg}\n\nJSON:")
     ])
     if llm_response:
         content = llm_response.strip().lstrip("```json").rstrip("```").strip()
@@ -160,27 +224,50 @@ def classify_intent(state: ReimburseState) -> dict:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # --- 步骤3：提取实体 + 检查缺失槽位 ---
+    # --- 步骤3：从上下文中继承已确认的实体 ---
+    dept = state.get("department", "")
+    etype = state.get("expense_type", "")
+    amt = state.get("total_amount", 0.0)
+    desc = state.get("description", "")
+    if ctx and not dept:
+        dept = ctx.department
+    if ctx and not etype:
+        etype = ctx.expense_type
+    if ctx and amt <= 0:
+        amt = ctx.total_amount
+    if ctx and not desc:
+        desc = ctx.description
+
+    # --- 步骤4：提取实体 + 检查缺失槽位 ---
+    from app.agent.entities import extract_entities, check_missing_slots
     entities = extract_entities(last_msg)
-    missing = check_missing_slots(entities, intent_result.required_slots)
+    # 合并上下文实体（新值优先）
+    merged_entities = ReimbursementEntities(
+        department=entities.department or dept,
+        expense_type=entities.expense_type or etype,
+        total_amount=entities.total_amount if entities.total_amount > 0 else amt,
+        description=entities.description or desc,
+    )
+    missing = check_missing_slots(merged_entities, intent_result.required_slots)
 
     logger.info(
         f"Intent: {intent_result.primary.value}/{intent_result.sub.value} "
-        f"(conf={intent_result.confidence}) "
-        f"missing={missing}"
+        f"(conf={intent_result.confidence}) missing={missing}"
     )
 
     return {
         "intent": intent_result.primary.value,
         "sub_intent": intent_result.sub.value,
         "intent_result": intent_result.to_dict(),
-        "department": entities.department,
-        "expense_type": entities.expense_type,
-        "total_amount": entities.total_amount,
-        "description": entities.description,
-        "entities": entities.to_dict(),
+        "department": merged_entities.department,
+        "expense_type": merged_entities.expense_type,
+        "total_amount": merged_entities.total_amount,
+        "description": merged_entities.description,
+        "entities": merged_entities.to_dict(),
         "missing_slots": missing,
-        "session_id": state.get("session_id", ""),
+        "session_id": session_id,
+        "is_contextual_fill": is_contextual,
+        "context_summary": ctx.get_context_summary() if ctx else "",
     }
 
 
@@ -209,18 +296,32 @@ def route_by_intent(
 # =============================================================================
 def entity_extraction(state: ReimburseState) -> dict:
     """
-    专业实体提取节点。
+    专业实体提取节点 —— 上下文感知版。
 
-    如果 LLM 可用，调用 LLM 重新提取自然语言中的隐含实体。
-    提取后检查缺失槽位 → 有缺失则引导用户补充。
+    1. 从当前消息提取实体
+    2. 从上下文中继承已确认的实体（非空才覆盖）
+    3. 合并后检查缺失槽位
     """
     messages = state["messages"]
     last_msg = messages[-1].content if messages else ""
 
+    # 从上下文继承已有实体
+    session_id = state.get("session_id", "")
+    from app.agent.sessions import get_session_store
+    ctx = get_session_store().get_context(session_id)
+
+    context_dept = ctx.department if ctx else ""
+    context_type = ctx.expense_type if ctx else ""
+    context_amount = ctx.total_amount if ctx else 0.0
+    context_desc = ctx.description if ctx else ""
+
     # LLM 增强实体提取
     llm_entities = ""
+    entity_prompt = ENTITY_EXTRACT_PROMPT
+    if ctx and ctx.get_context_summary():
+        entity_prompt += f"\n\n[上下文: {ctx.get_context_summary()}]\n当前消息可能是对缺失信息的补充。"
     llm_response = _try_llm([
-        HumanMessage(content=f"{ENTITY_EXTRACT_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
+        HumanMessage(content=f"{entity_prompt}\n\n用户输入: {last_msg}\n\nJSON:")
     ])
     if llm_response:
         llm_entities = llm_response.strip().lstrip("```json").rstrip("```").strip()
@@ -228,23 +329,35 @@ def entity_extraction(state: ReimburseState) -> dict:
     # 合并规则 + LLM 实体
     entities = extract_entities(last_msg, llm_entities)
 
-    # 重新检查缺失槽位
+    # 合并上下文实体（当前消息的实体优先，空缺才用上下文的）
+    merged = ReimbursementEntities(
+        department=entities.department or context_dept,
+        expense_type=entities.expense_type or context_type,
+        total_amount=entities.total_amount if entities.total_amount > 0 else context_amount,
+        description=entities.description or context_desc,
+        destination=entities.destination,
+        guest_count=entities.guest_count,
+        guest_company=entities.guest_company,
+    )
+
+    # 检查缺失槽位
     intent_data = state.get("intent_result", {})
     required = intent_data.get("required_slots", [])
-    missing = check_missing_slots(entities, required)
+    missing = check_missing_slots(merged, required)
 
     logger.info(
-        f"Entities: dept={entities.department} type={entities.expense_type} "
-        f"amount={entities.total_amount} missing={missing}"
+        f"Entities: dept={merged.department} type={merged.expense_type} "
+        f"amount={merged.total_amount} missing={missing}"
     )
 
     return {
-        "department": entities.department,
-        "expense_type": entities.expense_type,
-        "total_amount": entities.total_amount,
-        "description": entities.description,
-        "entities": entities.to_dict(),
+        "department": merged.department,
+        "expense_type": merged.expense_type,
+        "total_amount": merged.total_amount,
+        "description": merged.description,
+        "entities": merged.to_dict(),
         "missing_slots": missing,
+        "session_id": session_id,
     }
 
 
