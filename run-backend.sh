@@ -1,24 +1,38 @@
 #!/bin/bash
-# ReimburseAgent 后端启动脚本
-# 用法: bash run-backend.sh
-
+# ============================================================================
+# ReimburseAgent — UV 一键启动
+# ============================================================================
+# 依赖 uv 包管理器，自动处理数据层 + 数据库 + 后端启动。
+#
+# 用法:
+#   bash run-backend.sh          # 完整启动 (数据层 + 迁移 + 后端)
+#   bash run-backend.sh --dev    # 开发模式 (DEBUG + 热重载)
+#   bash run-backend.sh --data-only  # 仅启动数据层
+#
+# 等价于:
+#   cd backend && uv run reimburse start
+# ============================================================================
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/backend"
 
-# 1. 确保数据层运行
-echo ">>> 检查基础设施..."
-bash manage-infra.sh start 2>/dev/null || true
+echo ""
+echo "============================================"
+echo " ReimburseAgent — UV 一键启动"
+echo "============================================"
+echo ""
 
-# 2. 确保依赖安装
-echo ">>> 检查依赖..."
-cd backend
+# 确保依赖已安装
 uv sync 2>/dev/null || uv sync
-echo ""
 
-# 3. 启动后端
-echo ">>> 启动 FastAPI 后端: http://localhost:8000"
-echo "    API 文档: http://localhost:8000/docs"
-echo "    Health:   http://localhost:8000/health"
-echo ""
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+case "${1:-start}" in
+    --dev|dev)
+        uv run reimburse dev
+        ;;
+    --data-only)
+        uv run reimburse data start
+        ;;
+    start|*)
+        uv run reimburse start
+        ;;
+esac
