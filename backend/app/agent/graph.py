@@ -41,6 +41,7 @@ from app.agent.tools import (
     generate_reimbursement_pdf,
     send_approval_email,
     query_reimbursement_status,
+    save_reimbursement_to_db,
 )
 from app.agent.intents import (
     classify_by_keywords,
@@ -539,16 +540,64 @@ def budget_control(state: ReimburseState) -> dict:
 # =============================================================================
 # 预算检查后的路由
 # =============================================================================
-def route_after_budget(state: ReimburseState) -> Literal["special_approval", "generate_pdf", "rejection_response"]:
+def route_after_budget(state: ReimburseState) -> Literal["save_to_db", "rejection_response"]:
     """
-    预算检查后的三分支路由:
-      - 硬拒绝（compliance_result 有 critical errors）→ rejection_response
-      - 超标 → special_approval
-      - 正常 → generate_pdf
+    预算检查后的路由:
+      - 硬拒绝 → rejection_response（不保存）
+      - 超标/正常 → save_to_db（先入库再继续）
     """
     compliance = state.get("compliance_result", {})
     if compliance and compliance.get("passed") is False:
         return "rejection_response"
+    return "save_to_db"
+
+
+# =============================================================================
+# 节点 7：保存报销单到数据库
+# =============================================================================
+def save_to_db(state: ReimburseState) -> dict:
+    """
+    将报销单、发票明细、审批记录写入数据库，同步更新部门预算已使用金额。
+
+    这个节点是整个流程的关键：之前的意图识别/实体提取/政策检查/预算控制
+    都在"内存"中运行，只有这里才真正持久化数据。
+    """
+    department = state.get("department", "")
+    expense_type = state.get("expense_type", "")
+    total_amount = state.get("total_amount", 0)
+    invoices = state.get("invoices", [])
+    need_special = state.get("need_special_approval", False)
+    budget_result = state.get("budget_result", {})
+    budget_remaining = budget_result.get("after_reimbursement", 0)
+    description = state.get("description", "")
+
+    logger.info(
+        f"Saving to DB: dept={department} type={expense_type} "
+        f"amount={total_amount} special={need_special}"
+    )
+
+    result = _run_async(save_reimbursement_to_db(
+        department=department,
+        expense_type=expense_type,
+        total_amount=total_amount,
+        invoices=invoices,
+        need_special_approval=need_special,
+        budget_remaining_after=budget_remaining,
+        description=description,
+    ))
+
+    reimb_id = result.get("reimb_id", "")
+    logger.info(f"Saved: reimb_id={reimb_id}")
+
+    return {
+        "status": result.get("status", "pending"),
+        "session_id": reimb_id,
+        "messages": [AIMessage(content=f"✅ 报销单已创建 (单号: {reimb_id})")],
+    }
+
+
+def route_after_save(state: ReimburseState) -> Literal["special_approval", "generate_pdf"]:
+    """保存后根据是否超标决定下一步"""
     if state.get("need_special_approval", False):
         return "special_approval"
     return "generate_pdf"
@@ -682,6 +731,7 @@ def build_graph():
         ("ocr_invoice", ocr_invoice),
         ("policy_check", policy_check),
         ("budget_control", budget_control),
+        ("save_to_db", save_to_db),
         ("special_approval", special_approval),
         ("rejection_response", rejection_response),
         ("generate_pdf", generate_pdf),
@@ -726,9 +776,13 @@ def build_graph():
     builder.add_edge("ocr_invoice", "policy_check")
     builder.add_edge("policy_check", "budget_control")
 
-    # 预算检查后三分支
+    # 预算检查后：超标/正常 → 先入库 → 再走后续流程；硬拒绝 → 直接拒绝
     builder.add_conditional_edges("budget_control", route_after_budget, {
+        "save_to_db": "save_to_db",
         "rejection_response": "rejection_response",
+    })
+
+    builder.add_conditional_edges("save_to_db", route_after_save, {
         "special_approval": "special_approval",
         "generate_pdf": "generate_pdf",
     })
