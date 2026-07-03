@@ -67,6 +67,36 @@ from app.agent.prompts import (
     SLOT_FILLING_PROMPT,
 )
 
+import asyncio
+import concurrent.futures
+
+
+def _run_async(coro):
+    """
+    安全地运行一个 async 协程，无论调用方是否在 event loop 中。
+
+    背景:
+      FastAPI/uvicorn 运行在 asyncio event loop 中，
+      但 LangGraph 工作流节点是同步函数。
+      同步节点调用 async 工具时，不能直接用 asyncio.run()
+      （会报 "cannot be called from a running event loop"）。
+
+    方案:
+      检测当前是否有运行中的 event loop：
+        - 没有 → 直接用 asyncio.run()（最简单）
+        - 有   → 在新线程中执行 asyncio.run()（绕过同线程限制）
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 没有运行中的 event loop → 直接 asyncio.run()
+        return asyncio.run(coro)
+
+    # 有运行中的 event loop → 在新线程执行
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
+
 settings = get_settings()
 _llm_available = False if "sk-xxx" in settings.OPENAI_API_KEY else None
 llm = None
@@ -498,10 +528,9 @@ def policy_check(state: ReimburseState) -> dict:
 # =============================================================================
 def budget_control(state: ReimburseState) -> dict:
     """查询部门预算，判断是否超标"""
-    import asyncio
     department = state.get("department", "")
     total = state.get("total_amount", 0)
-    result = asyncio.run(budget_check(department=department, amount=total))
+    result = _run_async(budget_check(department=department, amount=total))
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
     return {"budget_result": result, "need_special_approval": need}
@@ -605,8 +634,7 @@ def send_email(state: ReimburseState) -> dict:
 
 def query_status(state: ReimburseState) -> dict:
     """查询审批进度"""
-    import asyncio
-    result = asyncio.run(query_reimbursement_status(reimb_id="", date_from="", date_to=""))
+    result = _run_async(query_reimbursement_status(reimb_id="", date_from="", date_to=""))
     steps = result.get("steps", [])
     text = "\n".join(f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps)
     return {"messages": [AIMessage(content=f"📋 状态: {result.get('status','未知')}\n{text}")]}
