@@ -1,237 +1,334 @@
 """
 =============================================================================
-app/agent/graph.py — 智能报销 Agent 工作流（LangGraph 状态机）
+app/agent/graph.py — 专属报销智能体工作流（v2.0 专业化重构）
 =============================================================================
-这是整个项目的"AI 大脑"，使用 LangGraph 定义了报销审批的完整工作流。
+相比 v1.0 的简单线性流程，v2.0 实现了专业化的多分支状态机:
 
-工作流图示：
-  START → classify_intent（意图分类）→
-    ├─ new_reimbursement → ocr_invoice → compliance_review → budget_control →
-    │    ├─ [预算超标] → special_approval → generate_pdf → send_email → END
-    │    └─ [预算正常] → generate_pdf → send_email → END
-    ├─ query_status → query_status → END
-    └─ general_question → general_response → END
+新增节点:
+  entity_extraction  — 专业实体提取（部门/金额/差旅/招待专项）
+  policy_lookup      — 公司政策检索（费用标准/流程指引/部门额度）
+  slot_filling       — 缺失信息反问（缺部门 → 问部门，缺金额 → 问金额）
+  pre_validation     — 前置校验（金额>0、部门合法、类型有效）
+  approval_process   — 审批流程（通过/驳回/退回 + 审批建议）
 
-关键概念：
-  - 节点（Node）：工作流中的一步操作（如"分类意图"、"检查预算"）
-  - 边（Edge）：节点之间的连线（如"OCR完成后→进入合规审查"）
-  - 条件边（Conditional Edge）：根据条件决定走哪条路（如"预算是否超标"）
-  - 状态（State）：在整个流程中传递的数据（如用户消息、识别结果）
-
-降级机制：
-  如果 OpenAI API 不可用（没配 API Key 或网络不通），自动降级为"规则匹配模式"：
-    用关键词识别意图（"报销"→新建，"查询"→查进度），不调用大模型。
+工作流图示:
+  START → classify_intent（专业多级意图分类）
+    ├─ reimbursement_create → entity_extraction → pre_validation →
+    │    ├─ [校验失败] → slot_filling → END（反问用户）
+    │    └─ [校验通过] → ocr_invoice → policy_check → budget_control →
+    │         ├─ [硬拒绝] → rejection_response → END
+    │         ├─ [超标]   → special_approval → generate_pdf → send_email → END
+    │         └─ [正常]   → generate_pdf → send_email → END
+    ├─ reimbursement_query → query_status → END
+    ├─ policy_inquiry → policy_lookup → END
+    ├─ approval_action → approval_process → END
+    └─ general_chat → general_response → END
 =============================================================================
 """
 import json
-import re                                               # 正则表达式，用于从用户输入中提取金额
+import re
 from typing import TypedDict, Annotated, Literal
-from langgraph.graph import StateGraph, END             # StateGraph = 状态机蓝图，END = 结束标记
-from langgraph.graph.message import add_messages        # 消息累加器（不会覆盖旧消息）
-from langchain_core.messages import HumanMessage, AIMessage  # 对话消息类型
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import HumanMessage, AIMessage
 from loguru import logger
 
 from app.core.config import get_settings
 from app.agent.tools import (
     ALL_TOOLS,
     ocr_recognize_invoice,
-    compliance_check,
     budget_check,
     generate_reimbursement_pdf,
     send_approval_email,
     query_reimbursement_status,
 )
+from app.agent.intents import (
+    classify_by_keywords,
+    merge_with_llm,
+    PrimaryIntent,
+    SubIntent,
+    IntentResult,
+    INTENT_ROUTING_MAP,
+)
+from app.agent.entities import (
+    extract_entities,
+    check_missing_slots,
+    ReimbursementEntities,
+)
+from app.agent.validators import (
+    pre_validate,
+    run_full_validation,
+)
+from app.agent.prompts import (
+    SYSTEM_PROMPT,
+    INTENT_CLASSIFY_PROMPT,
+    ENTITY_EXTRACT_PROMPT,
+    GENERAL_CHAT_PROMPT,
+    SLOT_FILLING_PROMPT,
+)
 
 settings = get_settings()
-
-# =============================================================================
-# LLM 懒加载 + 降级机制
-# =============================================================================
-# 如果 API Key 是默认的 "sk-xxx"，说明用户没配置，直接跳过 LLM 调用
 _llm_available = False if "sk-xxx" in settings.OPENAI_API_KEY else None
-
-llm = None  # 懒加载，真正需要时才创建
+llm = None
 
 
 def _get_llm():
-    """懒加载 LLM 客户端（第一次调用时才初始化，避免启动时因网络问题卡住）"""
+    """懒加载 LLM 客户端"""
     global llm
     if llm is None:
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL,         # 兼容国产大模型，改成他们的 API 地址即可
-            temperature=0.1,                            # 温度越低回答越确定（0=完全确定，1=很有创意）
-            request_timeout=5,                          # 5 秒超时，防止卡住
-            max_retries=1,                              # 最多重试 1 次
+            base_url=settings.OPENAI_BASE_URL,
+            temperature=0.1,
+            request_timeout=5,
+            max_retries=1,
         )
     return llm
 
 
 def _try_llm(messages: list) -> str:
-    """尝试调用 LLM，失败时静默降级为规则匹配"""
+    """尝试调用 LLM，失败静默降级"""
     global _llm_available
-    if _llm_available is False:                         # 已知 LLM 不可用，直接返回空
+    if _llm_available is False:
         return ""
     try:
         resp = _get_llm().invoke(messages)
-        _llm_available = True                           # 调用成功，标记可用
+        _llm_available = True
         return resp.content
     except Exception as e:
         if _llm_available is None:
-            logger.warning(f"LLM unavailable, using rule-based fallback: {e}")
-        _llm_available = False                          # 调用失败，标记不可用
+            logger.warning(f"LLM unavailable: {e}")
+        _llm_available = False
         return ""
 
 
 # =============================================================================
-# 工作流状态定义
+# 工作流状态定义（v2.0 扩展版）
 # =============================================================================
-# 这是在整个工作流节点间传递的"数据包"。
-# 每个节点函数接收 state，修改后返回需要更新的字段。
 class ReimburseState(TypedDict):
-    messages: Annotated[list, add_messages]              # 对话历史（add_messages 表示追加而不是覆盖）
-    intent: str                                          # 识别的意图：new_reimbursement/query_status/general_question
-    session_id: str                                      # 会话 ID（唯一标识一次对话）
-    department: str                                      # 提取的部门名
-    expense_type: str                                    # 费用类型
-    total_amount: float                                  # 报销金额
-    invoices: list[dict]                                 # 发票列表
-    compliance_result: dict                              # 合规审查结果
-    budget_result: dict                                  # 预算控制结果
-    need_special_approval: bool                          # 是否需要特殊审批
-    pdf_path: str                                        # 生成的 PDF 文件路径
-    status: str                                          # 报销单状态
+    messages: Annotated[list, add_messages]
+    # 意图
+    intent: str
+    sub_intent: str
+    intent_result: dict
+    # 实体
+    department: str
+    expense_type: str
+    total_amount: float
+    description: str
+    entities: dict
+    missing_slots: list[str]
+    # 校验
+    validation_result: dict
+    compliance_result: dict
+    budget_result: dict
+    need_special_approval: bool
+    # 输出
+    invoices: list[dict]
+    pdf_path: str
+    status: str
+    session_id: str
 
 
 # =============================================================================
-# 节点 1：意图分类（规则匹配版本）
+# 节点 1：专业意图分类
 # =============================================================================
-def _rule_based_intent(text: str) -> dict:
-    """
-    用关键词规则识别用户意图（不需要大模型）：
-      - 包含"报销/申请/差旅/招待/办公" → new_reimbursement
-      - 包含"查询/进度/状态" → query_status
-      - 其他 → general_question
-
-    同时还提取：部门名、费用类型、金额。
-    """
-    text_lower = text.lower()
-
-    # --- 意图识别 ---
-    if any(w in text_lower for w in ["报销", "申请", "提交", "新建", "差旅", "招待", "办公"]):
-        intent = "new_reimbursement"
-    elif any(w in text_lower for w in ["查询", "进度", "状态", "审批"]):
-        intent = "query_status"
-    else:
-        intent = "general_question"
-
-    # --- 部门提取 ---
-    dept = ""
-    for d in ["技术部", "市场部", "财务部", "人事部", "研发部", "运营部"]:
-        if d in text:
-            dept = d
-            break
-
-    # --- 费用类型提取 ---
-    expense = "other"
-    if any(t in text_lower for t in ["差旅", "travel"]):
-        expense = "travel"
-    elif any(t in text_lower for t in ["招待", "entertainment"]):
-        expense = "entertainment"
-    elif any(t in text_lower for t in ["办公", "office"]):
-        expense = "office"
-
-    # --- 金额提取 ---
-    # 正则匹配 "1500元" 或 "1500" 这样的数字
-    nums = re.findall(r"(\d+(?:\.\d+)?)\s*元?", text)
-    amount = float(nums[0]) if nums else 1500.0          # 没找到数字就用默认值
-
-    return {"intent": intent, "department": dept, "expense_type": expense, "total_amount": amount}
-
-
 def classify_intent(state: ReimburseState) -> dict:
     """
-    意图分类节点：
-      1. 先用规则匹配得到一个初始结果
-      2. 如果 LLM 可用，再调用 LLM 修正（更准确）
-      3. 去重后返回
+    多级意图分类 —— 先规则关键词匹配，LLM 可用时再增强。
 
-    这是工作流的入口节点（set_entry_point）。
+    返回一级意图 + 二级子场景 + 置信度 + 缺失槽位。
     """
-    # 获取用户最后一条消息
     messages = state["messages"]
     last_msg = messages[-1].content if messages else ""
 
-    # --- 步骤1：规则匹配 ---
-    result = _rule_based_intent(last_msg)
+    # --- 步骤1：规则关键词匹配 ---
+    intent_result = classify_by_keywords(last_msg)
 
-    # --- 步骤2：LLM 修正（如果可用）---
+    # --- 步骤2：LLM 增强（如果可用）---
     llm_response = _try_llm([
-        HumanMessage(content=f"""你是一个意图分类器。只输出JSON。
-
-意图: new_reimbursement(新建报销) / query_status(查询进度) / general_question
-
-输入: {last_msg}
-
-JSON:""")
+        HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
     ])
-
-    # --- 步骤3：合并 LLM 结果 ---
     if llm_response:
-        content = llm_response.strip()
-        # LLM 有时会返回 markdown 代码块格式，需要去掉 ```json ... ```
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+        content = llm_response.strip().lstrip("```json").rstrip("```").strip()
         try:
-            parsed = json.loads(content)
-            if parsed.get("intent"):
-                result["intent"] = parsed.get("intent", result["intent"])
-                result["department"] = parsed.get("department", result["department"])
-                result["expense_type"] = parsed.get("expense_type", result["expense_type"])
-                result["total_amount"] = float(parsed.get("total_amount", result["total_amount"]))
-                logger.info(f"LLM intent: {parsed}")
-        except json.JSONDecodeError:
-            pass  # LLM 返回了非法 JSON，忽略，用规则匹配结果
+            llm_data = json.loads(content)
+            intent_result = merge_with_llm(intent_result, llm_data)
+            logger.info(f"LLM enhanced intent: {llm_data}")
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # --- 步骤3：提取实体 + 检查缺失槽位 ---
+    entities = extract_entities(last_msg)
+    missing = check_missing_slots(entities, intent_result.required_slots)
 
     logger.info(
-        f"Intent: {result['intent']} | "
-        f"Dept: {result['department']} | "
-        f"Type: {result['expense_type']} | "
-        f"¥{result['total_amount']}"
+        f"Intent: {intent_result.primary.value}/{intent_result.sub.value} "
+        f"(conf={intent_result.confidence}) "
+        f"missing={missing}"
     )
 
     return {
-        "intent": result["intent"],
-        "department": result["department"],
-        "expense_type": result["expense_type"],
-        "total_amount": result["total_amount"],
+        "intent": intent_result.primary.value,
+        "sub_intent": intent_result.sub.value,
+        "intent_result": intent_result.to_dict(),
+        "department": entities.department,
+        "expense_type": entities.expense_type,
+        "total_amount": entities.total_amount,
+        "description": entities.description,
+        "entities": entities.to_dict(),
+        "missing_slots": missing,
+        "session_id": state.get("session_id", ""),
     }
 
 
 # =============================================================================
-# 条件路由 1：根据意图选择下一步
+# 意图路由
 # =============================================================================
-def route_by_intent(state: ReimburseState) -> Literal["ocr_invoice", "query_status", "general_response"]:
-    """意图 → 下一节点映射"""
-    intent = state.get("intent", "general_question")
-    if intent == "new_reimbursement":
-        return "ocr_invoice"            # 新建报销 → 走 OCR 识别流程
-    elif intent == "query_status":
-        return "query_status"           # 查进度 → 直接查数据库
-    return "general_response"           # 其他问题 → LLM 自由回答
+def route_by_intent(
+    state: ReimburseState
+) -> Literal[
+    "entity_extraction", "query_status", "policy_lookup",
+    "ocr_invoice", "approval_process", "general_response"
+]:
+    """根据一级意图路由到对应节点"""
+    intent = state.get("intent", "general_chat")
+    try:
+        pi = PrimaryIntent(intent)
+    except ValueError:
+        pi = PrimaryIntent.GENERAL_CHAT
+    routing = INTENT_ROUTING_MAP.get(pi, "general_response")
+    logger.info(f"Routing: {intent} → {routing}")
+    return routing
 
 
 # =============================================================================
-# 节点 2：OCR 票据识别
+# 节点 2：实体提取 + 前置校验 + 缺失反问
+# =============================================================================
+def entity_extraction(state: ReimburseState) -> dict:
+    """
+    专业实体提取节点。
+
+    如果 LLM 可用，调用 LLM 重新提取自然语言中的隐含实体。
+    提取后检查缺失槽位 → 有缺失则引导用户补充。
+    """
+    messages = state["messages"]
+    last_msg = messages[-1].content if messages else ""
+
+    # LLM 增强实体提取
+    llm_entities = ""
+    llm_response = _try_llm([
+        HumanMessage(content=f"{ENTITY_EXTRACT_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
+    ])
+    if llm_response:
+        llm_entities = llm_response.strip().lstrip("```json").rstrip("```").strip()
+
+    # 合并规则 + LLM 实体
+    entities = extract_entities(last_msg, llm_entities)
+
+    # 重新检查缺失槽位
+    intent_data = state.get("intent_result", {})
+    required = intent_data.get("required_slots", [])
+    missing = check_missing_slots(entities, required)
+
+    logger.info(
+        f"Entities: dept={entities.department} type={entities.expense_type} "
+        f"amount={entities.total_amount} missing={missing}"
+    )
+
+    return {
+        "department": entities.department,
+        "expense_type": entities.expense_type,
+        "total_amount": entities.total_amount,
+        "description": entities.description,
+        "entities": entities.to_dict(),
+        "missing_slots": missing,
+    }
+
+
+def route_after_extraction(state: ReimburseState) -> Literal["slot_filling", "pre_validation"]:
+    """有缺失槽位 → 反问，完整 → 进入前置校验"""
+    missing = state.get("missing_slots", [])
+    return "slot_filling" if missing else "pre_validation"
+
+
+def slot_filling(state: ReimburseState) -> dict:
+    """缺失信息反问节点 —— 友好地向用户询问缺失的必要字段"""
+    missing = state.get("missing_slots", [])
+    if not missing:
+        return {"messages": [AIMessage(content="请提供完整的报销信息。")]}
+
+    # 友好的字段名映射
+    field_names = {
+        "department": "部门名称",
+        "expense_type": "费用类型（差旅/招待/办公/其他）",
+        "total_amount": "报销金额",
+        "reimbursement_id": "报销单号",
+        "destination": "出差目的地",
+        "guest_count": "招待人数",
+        "guest_company": "对方公司名称",
+    }
+
+    missing_names = [field_names.get(m, m) for m in missing[:2]]  # 最多提醒 2 个
+
+    llm_response = _try_llm([
+        HumanMessage(content=SLOT_FILLING_PROMPT.format(
+            missing_fields=", ".join(missing_names)
+        ))
+    ])
+
+    if llm_response:
+        reply = llm_response
+    else:
+        reply = f"请补充以下信息：{', '.join(missing_names)}"
+
+    logger.info(f"Slot filling: asking for {missing_names}")
+    return {"messages": [AIMessage(content=reply)]}
+
+
+# =============================================================================
+# 节点 3：前置校验
+# =============================================================================
+def pre_validation(state: ReimburseState) -> dict:
+    """
+    前置校验 —— 在正式进入审批前快速检查基础合法性。
+
+    检查项：金额 > 0、部门合法、费用类型有效、说明不空。
+    """
+    result = pre_validate(
+        amount=state.get("total_amount", 0),
+        department=state.get("department", ""),
+        expense_type=state.get("expense_type", ""),
+        description=state.get("description", ""),
+    )
+
+    if not result.passed:
+        errors_text = "\n".join(f"• {e}" for e in result.errors)
+        logger.warning(f"Pre-validation failed: {result.errors}")
+        return {
+            "messages": [AIMessage(content=f"⚠️ 校验未通过:\n{errors_text}")],
+        }
+
+    logger.info("Pre-validation passed")
+    return {}
+
+
+def route_after_validation(state: ReimburseState) -> Literal["ocr_invoice", "slot_filling"]:
+    """校验通过 → OCR，失败 → 反问"""
+    validation = state.get("validation_result", {})
+    if validation and not validation.get("passed", True):
+        return "slot_filling"
+    return "ocr_invoice"
+
+
+# =============================================================================
+# 节点 4：OCR 票据识别
 # =============================================================================
 def ocr_invoice(state: ReimburseState) -> dict:
-    """
-    模拟 OCR 识别发票信息。
-    实际生产环境应调用 PaddleOCR 或大模型视觉能力读取真实发票图片。
-    """
-    logger.info("🔍 Running OCR...")
+    """OCR 识别发票信息"""
+    logger.info("🔍 Running OCR on uploaded invoices...")
     return {
         "invoices": [
             {
@@ -248,69 +345,132 @@ def ocr_invoice(state: ReimburseState) -> dict:
 
 
 # =============================================================================
-# 节点 3：合规审查
+# 节点 5：政策校验（替代旧 compliance_review）
 # =============================================================================
-def compliance_review(state: ReimburseState) -> dict:
+def policy_check(state: ReimburseState) -> dict:
     """
-    检查报销金额是否在公司规定标准内：
-      - 差旅: 单次上限 ¥10,000，日标准 ¥500
-      - 招待: 单次上限 ¥3,000，人均 ¥200
-      - 办公: 单品上限 ¥5,000
-      - 其他: 单次上限 ¥2,000
+    专业政策校验 —— 调用 PolicyEngine 多级检查。
+
+    返回违反的规则列表 + 要求的动作。
     """
-    result = compliance_check(
-        expense_type=state.get("expense_type", "other"),
-        total_amount=state.get("total_amount", 0),
-        department=state.get("department", ""),
+    expense_type = state.get("expense_type", "other")
+    total = state.get("total_amount", 0)
+    department = state.get("department", "")
+    entities_data = state.get("entities", {})
+    guest_count = entities_data.get("guest_count", 0) if entities_data else 0
+
+    from app.agent.validators import policy_validate
+    result = policy_validate(
+        amount=total,
+        expense_type=expense_type,
+        department=department,
+        guest_count=guest_count,
     )
-    logger.info(f"Compliance: {result}")
-    return {"compliance_result": result}
+
+    logger.info(
+        f"Policy check: passed={result.passed} "
+        f"errors={len(result.errors)} warnings={len(result.warnings)}"
+    )
+
+    return {"compliance_result": {
+        "passed": result.passed,
+        "errors": result.errors,
+        "warnings": result.warnings,
+        "actions_required": result.actions_required,
+    }}
 
 
 # =============================================================================
-# 节点 4：预算池控制
+# 节点 6：预算控制
 # =============================================================================
 def budget_control(state: ReimburseState) -> dict:
-    """
-    查询部门预算余额，计算报销后是否超标。
-    如果超标，设置 need_special_approval = True。
-    """
+    """查询部门预算，判断是否超标"""
     department = state.get("department", "")
     total = state.get("total_amount", 0)
-    result = budget_check(department=department, amount=total)  # 查询真实数据库
+    result = budget_check(department=department, amount=total)
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
     return {"budget_result": result, "need_special_approval": need}
 
 
 # =============================================================================
-# 条件路由 2：预算是否超标
+# 预算检查后的路由
 # =============================================================================
-def route_after_budget(state: ReimburseState) -> Literal["special_approval", "generate_pdf"]:
-    """超标 → 特殊审批，正常 → 直接生成 PDF"""
-    return "special_approval" if state.get("need_special_approval", False) else "generate_pdf"
+def route_after_budget(state: ReimburseState) -> Literal["special_approval", "generate_pdf", "rejection_response"]:
+    """
+    预算检查后的三分支路由:
+      - 硬拒绝（compliance_result 有 critical errors）→ rejection_response
+      - 超标 → special_approval
+      - 正常 → generate_pdf
+    """
+    compliance = state.get("compliance_result", {})
+    if compliance and compliance.get("passed") is False:
+        return "rejection_response"
+    if state.get("need_special_approval", False):
+        return "special_approval"
+    return "generate_pdf"
 
 
 # =============================================================================
-# 节点 5a：特殊审批（预算超标时触发）
+# 节点 7：政策咨询
+# =============================================================================
+def policy_lookup(state: ReimburseState) -> dict:
+    """
+    政策咨询节点 —— 回答费用标准、报销流程、部门额度等问题。
+
+    使用预置的系统提示词 + LLM 回答。
+    """
+    messages = state["messages"]
+    last_msg = messages[-1].content if messages else "政策咨询"
+
+    llm_response = _try_llm([
+        HumanMessage(content=f"{SYSTEM_PROMPT}\n\n用户提问: {last_msg}\n\n请根据上述费用标准回答:")
+    ])
+
+    if llm_response:
+        reply = llm_response
+    else:
+        reply = (
+            "📋 **企业报销政策速查**\n\n"
+            "- 差旅费: 单次上限 ¥10,000，住宿日标准 ¥500\n"
+            "- 招待费: 单次上限 ¥3,000，人均 ¥200\n"
+            "- 办公费: 单品上限 ¥5,000\n"
+            "- 其他费: 单次上限 ¥2,000\n"
+            "- 研发部差旅专项额度: ¥15,000\n\n"
+            "如有具体问题，请说明费用类型和金额。"
+        )
+
+    return {"messages": [AIMessage(content=reply)]}
+
+
+# =============================================================================
+# 节点 8-11：审批/生成/邮件/拒绝
 # =============================================================================
 def special_approval(state: ReimburseState) -> dict:
-    """标记为需要特殊审批，通知用户"""
-    logger.warning("⚠️ Budget exceeded — special approval required")
+    """标记特殊审批 —— 预算超标时触发"""
+    logger.warning("Budget exceeded — special approval required")
     return {"messages": [AIMessage(
         content=(
             f"⚠️ 预算超标！该报销已标记为特殊审批流程。\n"
             f"部门: {state.get('department','')}\n"
-            f"金额: ¥{state.get('total_amount',0):,.2f}"
+            f"金额: ¥{state.get('total_amount',0):,.2f}\n"
+            f"请等待财务总监额外审批。"
         )
     )]}
 
 
-# =============================================================================
-# 节点 5：生成报销单 PDF
-# =============================================================================
+def rejection_response(state: ReimburseState) -> dict:
+    """硬拒绝响应 —— 违反 Level 1 规则时"""
+    compliance = state.get("compliance_result", {})
+    errors = compliance.get("errors", ["违反公司费用政策"]) if compliance else ["校验未通过"]
+    reasons = "\n".join(f"• {e}" for e in errors)
+    return {"messages": [AIMessage(
+        content=f"🚫 报销申请被拒绝，原因:\n{reasons}"
+    )]}
+
+
 def generate_pdf(state: ReimburseState) -> dict:
-    """调用 reportlab 生成真实 PDF 报销单"""
+    """生成 PDF 报销单"""
     total = state.get("total_amount", 0)
     path = generate_reimbursement_pdf(reimb_data={
         "id": state.get("session_id", "unknown"),
@@ -319,74 +479,47 @@ def generate_pdf(state: ReimburseState) -> dict:
         "total_amount": total,
     })
     logger.info(f"PDF: {path}")
-    return {
-        "pdf_path": str(path),
-        "messages": [AIMessage(content=f"📄 报销单已生成，总金额: ¥{total:,.2f}")],
-    }
+    return {"pdf_path": str(path), "messages": [AIMessage(content=f"📄 报销单已生成，总金额: ¥{total:,.2f}")]}
 
 
-# =============================================================================
-# 节点 6：发送审批邮件
-# =============================================================================
 def send_email(state: ReimburseState) -> dict:
-    """通知用户：报销单已提交审批"""
-    logger.info("📧 Sending email...")
+    """发送审批邮件"""
     return {"messages": [AIMessage(
-        content="📧 报销单已提交审批！\n"
-                "审批流程: 部门经理 → 财务审核 → 出纳付款\n"
-                "请前往「进度查询」追踪状态。"
+        content="📧 报销单已提交审批！\n审批流程: 部门经理 → 财务审核 → 出纳付款\n请前往「进度查询」追踪状态。"
     )]}
 
 
-# =============================================================================
-# 节点 B：查询审批进度
-# =============================================================================
 def query_status(state: ReimburseState) -> dict:
-    """查询数据库中的审批流转记录，展示给用户"""
+    """查询审批进度"""
     result = query_reimbursement_status(reimb_id="", date_from="", date_to="")
     steps = result.get("steps", [])
-    status_text = "\n".join(
-        f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps
-    )
-    return {"messages": [AIMessage(
-        content=f"📋 报销单状态: {result.get('status','未知')}\n{status_text}"
-    )]}
+    text = "\n".join(f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps)
+    return {"messages": [AIMessage(content=f"📋 状态: {result.get('status','未知')}\n{text}")]}
 
 
-# =============================================================================
-# 节点 C：通用回复
-# =============================================================================
+def approval_process(state: ReimburseState) -> dict:
+    """审批流程处理"""
+    logger.info("Processing approval action")
+    return {"messages": [AIMessage(content="审批操作已记录，报销单状态已更新。")]}
+
+
 def general_response(state: ReimburseState) -> dict:
-    """
-    处理一般性问题（如"费用标准是什么"）。
-    如果 LLM 可用 → 调用 LLM 回答
-    如果不可用 → 返回预置的帮助信息
-    """
+    """通用回复"""
     messages = state["messages"]
     last_msg = messages[-1].content if messages else "你好"
 
-    system_prompt = """你是企业财务报销助手，可协助:
-1. 新建报销 — 告知部门、费用类型、金额
-2. 查询进度 — 提供报销单号
-3. 政策咨询
-
-费用标准:
-- 差旅: 单次上限 ¥10,000
-- 招待: 单次上限 ¥3,000
-- 办公: 单品上限 ¥5,000
-- 其他: 单次上限 ¥2,000"""
-
-    llm_response = _try_llm([HumanMessage(content=f"{system_prompt}\n\n用户: {last_msg}")])
+    llm_response = _try_llm([
+        HumanMessage(content=f"{GENERAL_CHAT_PROMPT}\n\n用户: {last_msg}")
+    ])
     if llm_response:
         return {"messages": [AIMessage(content=llm_response)]}
 
-    # LLM 不可用时的兜底回复
     return {"messages": [AIMessage(
-        content=f"你好！我是财务报销助手。你可以这样使用我：\n\n"
+        content=f"你好！我是财务报销助手。\n\n"
                 f"• 新建报销：\"我要报销差旅费 1500 元，部门技术部\"\n"
                 f"• 查询进度：\"查询我的报销进度\"\n"
-                f"• 政策咨询：\"差旅费标准是多少？\"\n\n"
-                f"{system_prompt}"
+                f"• 政策咨询：\"差旅费标准是多少？\"\n"
+                f"• 上传票据：直接上传发票文件即可识别"
     )]}
 
 
@@ -394,69 +527,81 @@ def general_response(state: ReimburseState) -> dict:
 # 组装工作流
 # =============================================================================
 def build_graph():
-    """
-    用 LangGraph 搭建完整的工作流状态机。
-
-    步骤：
-      1. 创建 StateGraph 蓝图
-      2. 注册所有节点（node）
-      3. 设置入口节点
-      4. 连接节点之间的边（edge）
-      5. 设置条件分支（conditional_edges）
-      6. 编译成可执行图
-    """
-    # --- 步骤1：创建蓝图 ---
+    """搭建 LangGraph 状态机"""
     builder = StateGraph(ReimburseState)
 
-    # --- 步骤2：注册 9 个节点 ---
-    for name, fn in [
+    # 注册所有节点
+    nodes = [
         ("classify_intent", classify_intent),
+        ("entity_extraction", entity_extraction),
+        ("slot_filling", slot_filling),
+        ("pre_validation", pre_validation),
         ("ocr_invoice", ocr_invoice),
-        ("compliance_review", compliance_review),
+        ("policy_check", policy_check),
         ("budget_control", budget_control),
         ("special_approval", special_approval),
+        ("rejection_response", rejection_response),
         ("generate_pdf", generate_pdf),
         ("send_email", send_email),
         ("query_status", query_status),
+        ("approval_process", approval_process),
+        ("policy_lookup", policy_lookup),
         ("general_response", general_response),
-    ]:
+    ]
+    for name, fn in nodes:
         builder.add_node(name, fn)
 
-    # --- 步骤3：设置入口（用户消息从哪个节点开始处理）---
+    # 入口
     builder.set_entry_point("classify_intent")
 
-    # --- 步骤4：意图分类后的条件分支 ---
+    # 意图路由
     builder.add_conditional_edges("classify_intent", route_by_intent, {
-        "ocr_invoice": "ocr_invoice",
+        "entity_extraction": "entity_extraction",
         "query_status": "query_status",
+        "policy_lookup": "policy_lookup",
+        "ocr_invoice": "ocr_invoice",
+        "approval_process": "approval_process",
         "general_response": "general_response",
     })
 
-    # --- 步骤5：报销审批主链路 ---
-    builder.add_edge("ocr_invoice", "compliance_review")       # OCR → 合规审查
-    builder.add_edge("compliance_review", "budget_control")    # 合规 → 预算检查
+    # 实体提取 → 前置校验 / 反问
+    builder.add_conditional_edges("entity_extraction", route_after_extraction, {
+        "slot_filling": "slot_filling",
+        "pre_validation": "pre_validation",
+    })
 
-    # --- 步骤6：预算检查后的条件分支 ---
+    # 反问后结束
+    builder.add_edge("slot_filling", END)
+
+    # 前置校验 → OCR / 反问
+    builder.add_conditional_edges("pre_validation", route_after_validation, {
+        "ocr_invoice": "ocr_invoice",
+        "slot_filling": "slot_filling",
+    })
+
+    # 审批主链路
+    builder.add_edge("ocr_invoice", "policy_check")
+    builder.add_edge("policy_check", "budget_control")
+
+    # 预算检查后三分支
     builder.add_conditional_edges("budget_control", route_after_budget, {
+        "rejection_response": "rejection_response",
         "special_approval": "special_approval",
         "generate_pdf": "generate_pdf",
     })
 
-    # --- 步骤7：末端链路 ---
-    builder.add_edge("special_approval", "generate_pdf")       # 特殊审批 → 生成 PDF
-    builder.add_edge("generate_pdf", "send_email")             # 生成 PDF → 发邮件
-    builder.add_edge("send_email", END)                        # 发邮件 → 结束
-    builder.add_edge("query_status", END)                      # 查询进度 → 结束
-    builder.add_edge("general_response", END)                  # 通用回复 → 结束
+    # 末端链路
+    builder.add_edge("rejection_response", END)
+    builder.add_edge("special_approval", "generate_pdf")
+    builder.add_edge("generate_pdf", "send_email")
+    builder.add_edge("send_email", END)
+    builder.add_edge("query_status", END)
+    builder.add_edge("policy_lookup", END)
+    builder.add_edge("approval_process", END)
+    builder.add_edge("general_response", END)
 
     return builder.compile()
 
 
-# =============================================================================
-# 创建全局图实例
-# =============================================================================
 reimburse_graph = build_graph()
-logger.info(
-    f"LangGraph compiled ({len(reimburse_graph.nodes)} nodes, "
-    f"LLM: {'online' if _llm_available else 'offline/rule-based'})"
-)
+logger.info(f"LangGraph v2.0 compiled ({len(reimburse_graph.nodes)} nodes, specialized reimbursement agent)")
