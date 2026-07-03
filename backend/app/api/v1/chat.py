@@ -145,33 +145,64 @@ async def chat(request: ChatRequest):
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
 
-            # --- 执行工作流 ---
+            # --- 流式执行工作流：每个节点完成后立即推送 ---
             from app.agent.graph import reimburse_graph
-            result = reimburse_graph.invoke(initial_state)
+
+            final_state = {}
+            all_messages = set()
+
+            async for chunk in reimburse_graph.astream(initial_state, stream_mode="updates"):
+                # chunk 格式: {"node_name": {"messages": [...], "department": ..., ...}}
+                for node_name, node_output in chunk.items():
+                    # 推送节点名作为进度
+                    if node_name:
+                        yield _sse_event("step", {"node": node_name})
+
+                    if isinstance(node_output, dict):
+                        msgs = node_output.get("messages", [])
+                        for msg in msgs:
+                            if hasattr(msg, "content") and msg.content:
+                                content = str(msg.content)
+                                # 按字符逐个推送，实现打字机效果
+                                # 用 hash 去重，避免重复推送
+                                msg_hash = hash(content)
+                                if msg_hash not in all_messages:
+                                    all_messages.add(msg_hash)
+                                    # 逐字符流式推送
+                                    for i in range(0, len(content), 1):
+                                        yield _sse_event("token", {
+                                            "content": content[i],
+                                            "node": node_name,
+                                        })
+                                    # 每条消息结束后发送换行
+                                    yield _sse_event("token", {"content": "\n"})
+
+                    # 累积最终状态
+                    final_state.update(node_output)
+
+            # --- 收集完整回复 ---
+            last_msg = ""
+            if final_state.get("messages"):
+                for m in reversed(final_state["messages"]):
+                    if hasattr(m, "content") and m.content:
+                        last_msg = str(m.content)
+                        break
+
+            _save_context(session_id, final_state, request.message, last_msg)
 
             # --- Event: intent ---
             yield _sse_event("intent", {
-                "intent": result.get("intent", ""),
-                "sub_intent": result.get("sub_intent", ""),
-                "confidence": result.get("intent_result", {}).get("confidence", 0),
+                "intent": final_state.get("intent", ""),
+                "sub_intent": final_state.get("sub_intent", ""),
             })
-
-            # --- Event: step ---
-            for msg in result["messages"]:
-                if hasattr(msg, "content") and msg.content:
-                    yield _sse_event("message", {"content": msg.content})
-
-            # --- 收集完整回复 ---
-            last_msg = result["messages"][-1].content if result["messages"] else ""
-            _save_context(session_id, result, request.message, last_msg)
 
             # --- Event: result ---
             yield _sse_event("result", {
-                "intent": result.get("intent", ""),
+                "intent": final_state.get("intent", ""),
                 "entities": {
-                    "department": result.get("department", ""),
-                    "expense_type": result.get("expense_type", ""),
-                    "total_amount": result.get("total_amount", 0),
+                    "department": final_state.get("department", ""),
+                    "expense_type": final_state.get("expense_type", ""),
+                    "total_amount": final_state.get("total_amount", 0),
                 },
                 "reply_preview": last_msg[:200],
             })

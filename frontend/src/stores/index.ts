@@ -25,8 +25,10 @@ export const useAppStore = create<AppState>((set) => ({
   updateLastMessage: (msg) =>
     set((s) => {
       const msgs = [...s.messages];
-      if (msgs.length > 0) {
-        msgs[msgs.length - 1] = msg;
+      if (msgs.length > 0 && msg.id) {
+        const idx = msgs.findIndex(m => m.id === msg.id);
+        if (idx >= 0) msgs[idx] = msg;
+        else msgs[msgs.length - 1] = msg;
       }
       return { messages: msgs };
     }),

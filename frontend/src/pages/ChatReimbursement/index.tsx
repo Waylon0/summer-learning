@@ -70,10 +70,14 @@ export default function ChatReimbursement() {
           case 'start':
             setSessionId(event.session_id || '');
             break;
-          case 'message':
-            assistantMsg.content += event.content + '\n';
+          case 'step':
+            break;
+          case 'token':
+            // 逐字符追加，实现打字机效果
+            assistantMsg.content += event.content || '';
             updateLastMessage(assistantMsg);
             break;
+          case 'intent':
           case 'result':
             break;
           case 'done':
@@ -81,8 +85,6 @@ export default function ChatReimbursement() {
             break;
           case 'error':
             message.error(event.message || '处理异常');
-            break;
-          case 'intent':
             break;
         }
       }
