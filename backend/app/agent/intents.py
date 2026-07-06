@@ -157,7 +157,7 @@ SUB_INTENT_SLOTS_MAP: dict[SubIntent, list[str]] = {
 INTENT_ROUTING_MAP: dict[PrimaryIntent, str] = {
     PrimaryIntent.REIMBURSEMENT_CREATE: "entity_extraction",
     PrimaryIntent.REIMBURSEMENT_QUERY: "query_status",
-    PrimaryIntent.REIMBURSEMENT_MODIFY: "general_response",
+    PrimaryIntent.REIMBURSEMENT_MODIFY: "modify_reimbursement",
     PrimaryIntent.POLICY_INQUIRY: "policy_lookup",
     PrimaryIntent.DOCUMENT_PARSE: "entity_extraction",
     PrimaryIntent.APPROVAL_ACTION: "approval_process",

@@ -30,46 +30,52 @@ class Settings(BaseSettings):
     DEBUG: bool = False                          # 调试模式开关
 
     # ===================== 数据库配置 =====================
-    # 异步数据库连接（asyncpg 是 PostgreSQL 的异步驱动）
     DATABASE_URL: str = "postgresql+asyncpg://reimburse:reimburse123@localhost:5432/reimburse_db"
-    # 同步数据库连接（Alembic 迁移工具需要）
     DATABASE_URL_SYNC: str = "postgresql://reimburse:reimburse123@localhost:5432/reimburse_db"
 
     # ===================== Redis 配置 =====================
-    REDIS_URL: str = "redis://localhost:6379/0"              # Redis 主连接（缓存）
-    CELERY_BROKER_URL: str = "redis://localhost:6379/1"      # Celery 消息队列（任务调度）
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"  # Celery 结果存储
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # ===================== MinIO 对象存储配置 =====================
-    MINIO_ENDPOINT: str = "localhost:9000"                        # MinIO 服务地址
-    MINIO_ACCESS_KEY: str = "minioadmin"                           # 访问密钥（用户名）
-    MINIO_SECRET_KEY: str = "minioadmin123"                       # 访问密钥（密码）
-    MINIO_BUCKET: str = "reimburse-attachments"                   # 存储桶名称（相当于文件夹）
-    MINIO_SECURE: bool = False                                     # 是否使用 HTTPS
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin123"
+    MINIO_BUCKET: str = "reimburse-attachments"
+    MINIO_SECURE: bool = False
 
     # ===================== AI 大模型配置 =====================
-    OPENAI_API_KEY: str = "sk-xxx"                                 # API 密钥（需要自己申请）
-    OPENAI_BASE_URL: str = "https://api.openai.com/v1"            # API 地址（兼容国产模型）
-    OPENAI_MODEL: str = "gpt-4o"                                   # 使用的模型名称
+    OPENAI_API_KEY: str = "sk-xxx"
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_MODEL: str = "gpt-4o"
 
     # ===================== 邮件服务配置 =====================
-    SMTP_HOST: str = "smtp.example.com"                            # SMTP 服务器地址
-    SMTP_PORT: int = 587                                           # 端口号（587=加密, 25=不加密）
-    SMTP_USER: str = ""                                            # 发件人邮箱账号
-    SMTP_PASSWORD: str = ""                                        # 发件人邮箱密码或授权码
-    SMTP_FROM: str = "noreply@company.com"                         # 发件人显示地址
+    SMTP_HOST: str = "smtp.example.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = "noreply@company.com"
 
     # ===================== 其他配置 =====================
-    CHROMA_PERSIST_DIR: str = "./data/chroma"     # 向量数据库存储路径（RAG 用，暂未启用）
-    UPLOAD_DIR: str = "./data/uploads"             # 上传文件本地暂存路径
-    LOG_LEVEL: str = "INFO"                        # 日志级别：DEBUG < INFO < WARNING < ERROR
+    CHROMA_PERSIST_DIR: str = "./data/chroma"
+    UPLOAD_DIR: str = "./data/uploads"
+    LOG_LEVEL: str = "INFO"
 
     # ===================== Pydantic 配置 =====================
     model_config = {
-        "env_file": ".env",                 # 自动加载同级目录的 .env 文件
-        "env_file_encoding": "utf-8",       # .env 文件的字符编码
-        "extra": "ignore",                  # 忽略 .env 中未定义的变量（不会报错）
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
     }
+
+    @property
+    def openai_api_key_masked(self) -> str:
+        """返回脱敏后的 API Key，安全用于日志输出"""
+        key = self.OPENAI_API_KEY
+        if len(key) <= 8:
+            return "***"
+        return key[:4] + "****" + key[-4:]
 
 
 @lru_cache()

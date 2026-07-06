@@ -129,13 +129,14 @@ class ReimbursementService:
             raise ReimbursementNotFoundError(reimb_id)
         return reimb
 
-    async def list_by_user(self, user_id: str, limit: int = 50) -> list[Reimbursement]:
+    async def list_by_user(self, user_id: str, limit: int = 50, offset: int = 0) -> list[Reimbursement]:
         """查询某用户的所有报销单"""
         result = await self.db.execute(
             select(Reimbursement)
             .options(selectinload(Reimbursement.invoices), selectinload(Reimbursement.approvals))
             .where(Reimbursement.user_id == user_id)
             .order_by(Reimbursement.created_at.desc())
+            .offset(offset)
             .limit(limit)
         )
         reimbs = list(result.scalars().all())
@@ -143,9 +144,10 @@ class ReimbursementService:
         return reimbs
 
     async def list_by_status(
-        self, status: str = None, start_date: str = None, end_date: str = None, limit: int = 50
+        self, status: str = None, start_date: str = None, end_date: str = None,
+        limit: int = 50, offset: int = 0,
     ) -> list[Reimbursement]:
-        """按状态/日期范围查询报销单列表"""
+        """按状态/日期范围查询报销单列表（支持分页）"""
         conditions = []
         if status:
             conditions.append(Reimbursement.status == status)
@@ -159,6 +161,7 @@ class ReimbursementService:
             .options(selectinload(Reimbursement.invoices), selectinload(Reimbursement.approvals))
             .where(and_(*conditions) if conditions else True)
             .order_by(Reimbursement.created_at.desc())
+            .offset(offset)
             .limit(limit)
         )
         result = await self.db.execute(stmt)

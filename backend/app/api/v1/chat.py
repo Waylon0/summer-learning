@@ -69,6 +69,7 @@ def _build_initial_state(request: ChatRequest, ctx: SessionContext, is_contextua
         "pdf_path": "",
         "status": "",
         "reimb_id": "",
+        "attachments": request.attachments or [],
     }
 
 
@@ -248,12 +249,10 @@ async def _chat_stream(request: ChatRequest):
                                 msg_hash = hash(content)
                                 if msg_hash not in all_messages:
                                     all_messages.add(msg_hash)
-                                    for i in range(0, len(content), 1):
-                                        yield _sse_event("token", {
-                                            "content": content[i],
-                                            "node": node_name,
-                                        })
-                                    yield _sse_event("token", {"content": "\n"})
+                                    yield _sse_event("message", {
+                                        "content": content,
+                                        "node": node_name,
+                                    })
 
                     final_state.update(node_output)
 

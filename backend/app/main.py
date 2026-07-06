@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"{'='*60}")
     logger.info(f"  {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"  LLM: {settings.OPENAI_MODEL} @ {settings.OPENAI_BASE_URL}")
+    logger.info(f"  API Key: {settings.openai_api_key_masked}")
     logger.info(f"{'='*60}")
 
     # --- 启动：自动创建数据库表 ---

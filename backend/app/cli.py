@@ -129,9 +129,7 @@ def db_init():
         _sh(["uv", "run", "python", "-c", code], cwd=BACKEND_DIR)
 
     print("   [2/3] 导入种子数据...")
-    r = _sh(["uv", "run", "python", "seed.py"], cwd=BACKEND_DIR)
-    if r.returncode != 0:
-        _sh(["uv", "run", "python", "seed_data/seed.py"], cwd=BACKEND_DIR)
+    _sh(["uv", "run", "python", "seed.py"], cwd=BACKEND_DIR)
 
     print("   [3/3] ✅ 数据库就绪")
 

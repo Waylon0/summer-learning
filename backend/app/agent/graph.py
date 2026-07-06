@@ -152,6 +152,35 @@ async def _try_llm_async(messages: list) -> str:
         return ""
 
 
+async def _try_llm_structured(messages: list, output_schema: type) -> dict | None:
+    """Try LLM with Pydantic structured output, fallback on failure"""
+    global _llm_available
+    if _llm_available is False:
+        return None
+    try:
+        from langchain_openai import ChatOpenAI
+        structured_llm = ChatOpenAI(
+            model=settings.OPENAI_MODEL,
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+            temperature=0,
+            request_timeout=10,
+            max_retries=1,
+        ).with_structured_output(output_schema, method="json_mode")
+        resp = await structured_llm.ainvoke(messages)
+        _llm_available = True
+        if isinstance(resp, dict):
+            return resp
+        if hasattr(resp, "model_dump"):
+            return resp.model_dump()
+        return resp
+    except Exception as e:
+        if _llm_available is None:
+            logger.warning(f"LLM structured unavailable: {e}")
+        _llm_available = False
+        return None
+
+
 # =============================================================================
 # 工作流状态定义（v2.0 扩展版）
 # =============================================================================
@@ -182,6 +211,7 @@ class ReimburseState(TypedDict):
     pdf_path: str
     status: str
     reimb_id: str
+    attachments: list[str]
 
 
 # =============================================================================
@@ -257,21 +287,32 @@ async def classify_intent(state: ReimburseState) -> dict:
     # 如果有上下文，在提示词中注入上下文信息
     intent_result = classify_by_keywords(last_msg)
 
-    # --- 步骤2：LLM 增强（如果可用）---
-    llm_prompt = INTENT_CLASSIFY_PROMPT
-    if context_summary:
-        llm_prompt += f"\n\n[对话上下文]\n{context_summary}\n请注意：当前消息可能是对上一轮Agent提问的回答。"
-    llm_response = await _try_llm_async([
-        HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
-    ])
-    if llm_response:
-        content = llm_response.strip().lstrip("```json").rstrip("```").strip()
-        try:
-            llm_data = json.loads(content)
-            intent_result = merge_with_llm(intent_result, llm_data)
-            logger.info(f"LLM enhanced intent: {llm_data}")
-        except (json.JSONDecodeError, ValueError):
-            pass
+    # --- 步骤2：LLM 增强（优先使用 structured output，降级到 JSON 解析）---
+    from pydantic import BaseModel, Field
+    class IntentOutput(BaseModel):
+        primary: str = Field(description="一级意图")
+        sub: str = Field(description="二级意图")
+        confidence: float = Field(description="置信度 0-1")
+
+    structured = await _try_llm_structured(
+        [HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}")],
+        IntentOutput,
+    )
+    if structured:
+        intent_result = merge_with_llm(intent_result, structured)
+        logger.info(f"LLM structured intent: {structured}")
+    else:
+        llm_response = await _try_llm_async([
+            HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}\n\nJSON:")
+        ])
+        if llm_response:
+            content = llm_response.strip().lstrip("```json").rstrip("```").strip()
+            try:
+                llm_data = json.loads(content)
+                intent_result = merge_with_llm(intent_result, llm_data)
+                logger.info(f"LLM enhanced intent: {llm_data}")
+            except (json.JSONDecodeError, ValueError):
+                pass
 
     # --- 步骤3：从上下文中继承已确认的实体 ---
     dept = state.get("department", "")
@@ -457,20 +498,35 @@ def pre_validation(state: ReimburseState) -> dict:
     前置校验 —— 在正式进入审批前快速检查基础合法性。
 
     检查项：金额 > 0、部门合法、费用类型有效、说明不空。
+    失败时使用结构化异常日志。
     """
+    from app.core.exceptions import BusinessException, BudgetExceededError
+    amount = state.get("total_amount", 0)
+    department = state.get("department", "")
+    expense_type = state.get("expense_type", "")
+    description = state.get("description", "")
+
     result = pre_validate(
-        amount=state.get("total_amount", 0),
-        department=state.get("department", ""),
-        expense_type=state.get("expense_type", ""),
-        description=state.get("description", ""),
+        amount=amount,
+        department=department,
+        expense_type=expense_type,
+        description=description,
     )
 
     if not result.passed:
         errors_text = "\n".join(f"• {e}" for e in result.errors)
-        logger.warning(f"Pre-validation failed: {result.errors}")
+        logger.warning(BusinessException(
+            message=f"前置校验未通过: {result.errors}",
+            error_code="VALIDATION_FAILED",
+        ).message)
         return {
             "messages": [AIMessage(content=f"⚠️ 校验未通过:\n{errors_text}")],
         }
+
+    if amount > 90000:
+        logger.warning(
+            BudgetExceededError(department=department, amount=amount, remaining=0).message
+        )
 
     logger.info("Pre-validation passed")
     return {}
@@ -487,21 +543,52 @@ def route_after_validation(state: ReimburseState) -> Literal["ocr_invoice", "slo
 # =============================================================================
 # 节点 4：OCR 票据识别
 # =============================================================================
-def ocr_invoice(state: ReimburseState) -> dict:
-    """OCR 识别发票信息"""
-    logger.info("🔍 Running OCR on uploaded invoices...")
+async def ocr_invoice(state: ReimburseState) -> dict:
+    """OCR 识别上传的发票文件，支持多张发票分别识别并汇总金额"""
+    attachments = state.get("attachments", [])
+    if not attachments:
+        logger.info("🔍 No attachments — using user-provided amount")
+        invoices = [{
+            "invoice_code": "",
+            "invoice_number": "",
+            "amount": state.get("total_amount", 0),
+            "invoice_date": "",
+            "seller_name": "",
+            "buyer_name": "",
+        }]
+        return {
+            "invoices": invoices,
+            "messages": [AIMessage(content="ℹ️ 未检测到上传票据，将按您提供的金额提交。")],
+        }
+
+    logger.info(f"🔍 OCR processing {len(attachments)} attachment(s)...")
+    invoices = []
+    total_ocr = 0.0
+
+    for file_path in attachments:
+        try:
+            result = await ocr_recognize_invoice(file_path)
+            if result.get("amount", 0) > 0:
+                invoices.append(result)
+                total_ocr += result["amount"]
+        except Exception as e:
+            logger.warning(f"OCR failed for {file_path}: {e}")
+
+    if not invoices:
+        invoices = [{
+            "invoice_code": "", "invoice_number": "",
+            "amount": state.get("total_amount", 0),
+            "invoice_date": "", "seller_name": "", "buyer_name": "",
+        }]
+    else:
+        logger.info(f"OCR complete: {len(invoices)} invoice(s), total=¥{total_ocr:,.2f}")
+
     return {
-        "invoices": [
-            {
-                "invoice_code": "044001900111",
-                "invoice_number": "87654321",
-                "amount": state.get("total_amount", 0),
-                "invoice_date": "2026-06-15",
-                "seller_name": "某某科技有限公司",
-                "buyer_name": "中国石油华东分公司",
-            }
-        ],
-        "messages": [AIMessage(content="✅ 票据识别完成，已提取发票信息。")],
+        "invoices": invoices,
+        "messages": [AIMessage(
+            content=f"✅ 票据识别完成，共 {len(invoices)} 张发票"
+            + (f"，合计 ¥{total_ocr:,.2f}" if total_ocr > 0 else "")
+        )],
     }
 
 
@@ -688,23 +775,36 @@ def special_approval(state: ReimburseState) -> dict:
 
 def rejection_response(state: ReimburseState) -> dict:
     """硬拒绝响应 —— 违反 Level 1 规则时"""
+    from app.core.exceptions import ComplianceViolationError
     compliance = state.get("compliance_result", {})
     errors = compliance.get("errors", ["违反公司费用政策"]) if compliance else ["校验未通过"]
     reasons = "\n".join(f"• {e}" for e in errors)
+    total = state.get("total_amount", 0)
+    etype = state.get("expense_type", "other")
+    logger.error(
+        ComplianceViolationError(expense_type=etype, amount=total, limit=50000).message
+    )
     return {"messages": [AIMessage(
         content=f"🚫 报销申请被拒绝，原因:\n{reasons}"
     )]}
 
 
-def generate_pdf(state: ReimburseState) -> dict:
-    """生成 PDF 报销单"""
+async def generate_pdf(state: ReimburseState) -> dict:
+    """生成 PDF 报销单（CPU 密集型任务放线程池，不阻塞事件循环）"""
+    import asyncio
     total = state.get("total_amount", 0)
-    path = generate_reimbursement_pdf(reimb_data={
-        "id": state.get("reimb_id", state.get("session_id", "unknown")),
-        "department": state.get("department", ""),
-        "expense_type": state.get("expense_type", ""),
-        "total_amount": total,
-    })
+    invoices = state.get("invoices", [])
+
+    path = await asyncio.to_thread(
+        generate_reimbursement_pdf,
+        reimb_data={
+            "id": state.get("reimb_id", state.get("session_id", "unknown")),
+            "department": state.get("department", ""),
+            "expense_type": state.get("expense_type", ""),
+            "total_amount": total,
+            "invoices": invoices,
+        },
+    )
     logger.info(f"PDF: {path}")
     return {"pdf_path": str(path), "messages": [AIMessage(content=f"📄 报销单已生成，总金额: ¥{total:,.2f}")]}
 
@@ -728,17 +828,104 @@ async def send_email(state: ReimburseState) -> dict:
 
 
 async def query_status(state: ReimburseState) -> dict:
-    """查询审批进度"""
-    result = await query_reimbursement_status(reimb_id="", date_from="", date_to="")
+    """查询审批进度 — 从上下文/实体中提取报销单号"""
+    reimb_id = state.get("reimb_id", "")
+    entities = state.get("entities", {})
+    if not reimb_id and entities:
+        reimb_id = entities.get("reimbursement_id", "")
+    if not reimb_id:
+        messages_list = state.get("messages", [])
+        last_msg = messages_list[-1].content if messages_list else ""
+        from app.agent.entities import _extract_uuid
+        reimb_id = _extract_uuid(last_msg)
+
+    if not reimb_id:
+        return {"messages": [AIMessage(
+            content="📋 请提供报销单号，例如：\"查询 a1b2c3d4 的进度\""
+        )]}
+
+    logger.info(f"Query status for reimb_id={reimb_id}")
+    result = await query_reimbursement_status(reimb_id=reimb_id)
     steps = result.get("steps", [])
-    text = "\n".join(f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps)
-    return {"messages": [AIMessage(content=f"📋 状态: {result.get('status','未知')}\n{text}")]}
+    status_map = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
+    status_cn = status_map.get(result.get("status", "pending"), "未知")
+
+    if steps:
+        text = "\n".join(
+            f"  {s['step']}. {s['approver']} — {s['action']}"
+            for s in steps
+        )
+    else:
+        text = "  暂无审批记录"
+
+    return {"messages": [AIMessage(
+        content=f"📋 报销单 {reimb_id}\n状态: {status_cn}\n审批流程:\n{text}"
+    )]}
 
 
 def approval_process(state: ReimburseState) -> dict:
     """审批流程处理"""
     logger.info("Processing approval action")
     return {"messages": [AIMessage(content="审批操作已记录，报销单状态已更新。")]}
+
+
+async def modify_reimbursement(state: ReimburseState) -> dict:
+    """
+    修改/撤回报销单。
+
+    仅允许撤回 status=pending 的报销单；
+    已审批/已付款的报销单无法撤回。
+    """
+    entities = state.get("entities", {})
+    reimb_id = state.get("reimb_id", entities.get("reimbursement_id", ""))
+    if not reimb_id:
+        messages_list = state.get("messages", [])
+        last_msg = messages_list[-1].content if messages_list else ""
+        from app.agent.entities import _extract_uuid
+        reimb_id = _extract_uuid(last_msg)
+
+    if not reimb_id:
+        return {"messages": [AIMessage(
+            content="请提供要修改的报销单号，例如：\"撤回 a1b2c3d4\""
+        )]}
+
+    logger.info(f"Attempting to modify/cancel reimbursement {reimb_id}")
+    try:
+        from sqlalchemy import text
+        from app.core.database import engine
+
+        async with engine.connect() as conn:
+            # 查当前状态
+            r = await conn.execute(
+                text("SELECT status FROM reimbursements WHERE id = :rid"), {"rid": reimb_id}
+            )
+            row = r.fetchone()
+            if not row:
+                return {"messages": [AIMessage(content=f"❌ 报销单 {reimb_id} 不存在。")]}
+
+            current_status = row.status
+            if current_status != "pending":
+                return {"messages": [AIMessage(
+                    content=f"❌ 报销单 {reimb_id} 当前状态为「{current_status}」，无法撤回。\n只有「待审批」状态的报销单可以撤回。"
+                )]}
+
+            # 撤回：设为 cancelled，退回预算
+            await conn.execute(
+                text("UPDATE reimbursements SET status = 'cancelled' WHERE id = :rid"),
+                {"rid": reimb_id},
+            )
+            await conn.execute(
+                text("UPDATE approval_records SET action = 'cancelled', comment = '申请人撤回' WHERE reimbursement_id = :rid"),
+                {"rid": reimb_id},
+            )
+            await conn.commit()
+
+        return {"messages": [AIMessage(
+            content=f"✅ 报销单 {reimb_id} 已撤回。如需重新提交，请重新发起报销申请。"
+        )]}
+    except Exception as e:
+        logger.error(f"Failed to modify reimbursement {reimb_id}: {e}")
+        return {"messages": [AIMessage(content=f"❌ 撤回失败: {e}")]}
 
 
 async def general_response(state: ReimburseState) -> dict:
@@ -791,6 +978,7 @@ def build_graph():
         ("send_email", send_email),
         ("query_status", query_status),
         ("approval_process", approval_process),
+        ("modify_reimbursement", modify_reimbursement),
         ("policy_lookup", policy_lookup),
         ("general_response", general_response),
     ]
@@ -807,6 +995,7 @@ def build_graph():
         "policy_lookup": "policy_lookup",
         "ocr_invoice": "ocr_invoice",
         "approval_process": "approval_process",
+        "modify_reimbursement": "modify_reimbursement",
         "general_response": "general_response",
     })
 
@@ -846,6 +1035,7 @@ def build_graph():
     builder.add_edge("generate_pdf", "send_email")
     builder.add_edge("send_email", END)
     builder.add_edge("query_status", END)
+    builder.add_edge("modify_reimbursement", END)
     builder.add_edge("policy_lookup", END)
     builder.add_edge("approval_process", END)
     builder.add_edge("general_response", END)

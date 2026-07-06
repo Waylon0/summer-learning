@@ -45,14 +45,15 @@ async def list_reimbursements(
     user_id: str = None,
     status: str = None,
     limit: int = 50,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
-    """查询报销单列表"""
+    """查询报销单列表（支持分页）"""
     svc = ReimbursementService(db)
     if user_id:
-        reimbs = await svc.list_by_user(user_id, limit)
+        reimbs = await svc.list_by_user(user_id, limit=limit, offset=offset)
     else:
-        reimbs = await svc.list_by_status(status, limit=limit)
+        reimbs = await svc.list_by_status(status, limit=limit, offset=offset)
     return [_to_response(r) for r in reimbs]
 
 
