@@ -727,34 +727,37 @@ async def policy_lookup(state: ReimburseState) -> dict:
 
     get_or_build_index()
     kb_context = build_context_for_llm(last_msg, top_k=3)
-    logger.info(f"RAG: retrieved {len(kb_context)} chars of context")
+    has_kb = bool(kb_context and len(kb_context) > 20)
+    logger.info(f"RAG: {'hit' if has_kb else 'miss'} — {len(kb_context)} chars")
 
-    if kb_context:
-        llm_response = await _try_llm_async([
+    if has_kb:
+        reply = await _try_llm_async([
             HumanMessage(content=POLICY_INQUIRY_PROMPT.format(
                 context=kb_context, user_query=last_msg
             ))
         ])
-    else:
-        llm_response = await _try_llm_async([
-            HumanMessage(content=f"{SYSTEM_PROMPT}\n\n用户提问: {last_msg}")
-        ])
+        if reply:
+            return {"messages": [AIMessage(content=reply)]}
+        return {"messages": [AIMessage(content=f"📋 根据公司政策:\n\n{kb_context[:800]}")]}
 
-    if llm_response:
-        reply = llm_response
-    elif kb_context:
-        reply = f"📋 根据公司政策:\n\n{kb_context[:800]}"
-    else:
-        reply = (
-            "📋 **报销政策速查**\n\n"
-            "- 差旅费: 单次上限 ¥10,000，住宿日标准 ¥500\n"
-            "- 招待费: 单次上限 ¥3,000，人均 ¥200\n"
-            "- 办公费: 单品上限 ¥5,000\n"
-            "- 其他费: 单次上限 ¥2,000\n\n"
-            "详细政策请参阅《员工手册》或咨询财务部。"
+    # RAG 未命中 → 切换闲聊模式，LLM 自由对话
+    casual_prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"知识库中没有找到与该问题直接相关的政策条款。"
+        f"请以友好、专业的态度回答用户问题。如果是闲聊或通用问题，直接自然回复；"
+        f"如果涉及报销政策，诚实告知建议咨询财务部。"
+    )
+    reply = await _try_llm_async([HumanMessage(content=f"{casual_prompt}\n\n用户提问: {last_msg}")])
+    if reply:
+        return {"messages": [AIMessage(content=reply)]}
+
+    return {"messages": [AIMessage(
+        content=(
+            f"抱歉，我在知识库中暂未找到与「{last_msg[:30]}」相关的政策。\n\n"
+            "如需了解费用标准，可输入：差旅费标准 / 招待费标准 / 办公费标准\n"
+            "或直接咨询财务部获取最新政策。"
         )
-
-    return {"messages": [AIMessage(content=reply)]}
+    )]}
 
 
 # =============================================================================
@@ -930,21 +933,33 @@ async def modify_reimbursement(state: ReimburseState) -> dict:
 
 async def general_response(state: ReimburseState) -> dict:
     """
-    通用回复 — RAG 增强版。
+    通用回复 — RAG 增强 + 闲聊降级。
 
-    检索知识库获取相关上下文，让回答更有依据。
+    1. 检索知识库获取相关上下文
+    2. 命中 → 基于知识库回答
+    3. 未命中 → LLM 自由对话，不强制报销主题
     """
     messages = state["messages"]
     last_msg = messages[-1].content if messages else "你好"
 
     from app.agent.knowledge.retriever import build_context_for_llm
     kb_context = build_context_for_llm(last_msg, top_k=2)
+    has_kb = bool(kb_context and len(kb_context) > 20)
 
-    prompt = GENERAL_CHAT_PROMPT.format(context=kb_context or "无特定知识库内容", user_query=last_msg)
-    llm_response = await _try_llm_async([HumanMessage(content=prompt)])
+    if has_kb:
+        prompt = GENERAL_CHAT_PROMPT.format(context=kb_context, user_query=last_msg)
+    else:
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"知识库中没有找到与用户问题直接相关的内容。"
+            f"请以友好、专业的财务助手身份自由回答。"
+            f"不要编造不存在的政策条款。\n\n"
+            f"用户: {last_msg}"
+        )
 
-    if llm_response:
-        return {"messages": [AIMessage(content=llm_response)]}
+    reply = await _try_llm_async([HumanMessage(content=prompt)])
+    if reply:
+        return {"messages": [AIMessage(content=reply)]}
 
     return {"messages": [AIMessage(
         content=f"你好！我是财务报销助手。\n\n"
