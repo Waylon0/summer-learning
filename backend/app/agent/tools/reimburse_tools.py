@@ -181,8 +181,22 @@ def _empty_invoice_result(file_path: str) -> dict:
 # =============================================================================
 async def compliance_check(expense_type: str, total_amount: float, department: str) -> dict:
     """
-    检查费用是否符合公司差旅/招待/办公标准。
-    优先从数据库 expense_policy 表读取限额，DB 不可用时 fallback 到硬编码默认值。
+    检查报销金额是否符合公司费用标准。在每笔报销保存到数据库之前必须调用。
+
+    调用时机：OCR 识别完成 + 金额汇总后，预算检查之前。
+    检查内容：根据费用类型（travel/entertainment/office/other），对比数据库 expense_policy 表
+    或 fallback 到硬编码的默认限额，判断是否超标。
+
+    参数:
+        expense_type : travel / entertainment / office / other
+        total_amount : 报销总金额（所有发票汇总后）
+        department   : 申请部门名称
+
+    返回:
+        compliant  : bool    是否合规
+        limit      : float   对应的费用上限
+        message    : str     合规/超标描述
+        如果超标，调用方需要标记 need_special_approval=True
     """
     _FALLBACK_LIMITS = {
         "travel":        {"max_per_trip": 10000, "daily_limit": 500},
@@ -246,7 +260,22 @@ async def compliance_check(expense_type: str, total_amount: float, department: s
 # =============================================================================
 async def budget_check(department: str, amount: float) -> dict:
     """
-    查询部门预算余额，计算报销后是否超标。
+    查询部门年度预算余额，判断当前报销金额是否会导致预算超支。
+
+    调用时机：合规检查通过后，报销单入库之前。
+    数据来源：数据库 department_budget 表，读取年度预算和已使用金额。
+    计算方式：报销后余额 = 剩余预算 - 当前报销金额，小于 0 则标记超标。
+
+    参数:
+        department : 部门名称
+        amount     : 本次报销金额
+
+    返回:
+        remaining              : float   报销前剩余预算
+        after_reimbursement    : float   报销后剩余预算（负数即超支）
+        exceeded               : bool    是否超支
+        need_special_approval  : bool    是否需要特殊审批（超支则为 True）
+        annual_budget          : float   年度总预算
     """
     from sqlalchemy import text
     bud = None
@@ -294,7 +323,18 @@ async def budget_check(department: str, amount: float) -> dict:
 # 工具 4：生成报销单 PDF（中文字体 + 表格 + 签字区）
 # =============================================================================
 def generate_reimbursement_pdf(reimb_data: dict) -> str:
-    """生成格式化的中文报销单 PDF"""
+    """
+    生成标准化的中文报销单 PDF 文件，包含公司抬头、报销明细表、金额汇总和签字区。
+
+    调用时机：合规检查 + 预算检查 + 数据库保存全部完成后，发送邮件之前。
+    输出格式：A4 大小，中文黑体/微软雅黑字体，含表格、金额汇总行和审批签字区。
+
+    参数:
+        reimb_data : 报销数据字典，需包含 id, department, expense_type, total_amount, invoices 等
+
+    返回:
+        生成的 PDF 文件的绝对路径（临时目录），用于后续邮件附件
+    """
     import os as _os
     import tempfile
     from datetime import date
@@ -475,7 +515,22 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
 # 工具 5：发送审批邮件（同步，Celery 任务提交后立即返回）
 # =============================================================================
 async def send_approval_email(to_email: str, reimb_id: str, total_amount: float, pdf_path: str = "") -> dict:
-    """发送审批通知邮件（优先 Celery 异步，不可用时同步发送）"""
+    """
+    发送审批通知邮件给审批人，附带生成的 PDF 报销单作为附件。
+
+    调用时机：PDF 生成完成后，作为报销流程的最后一步。
+    发送方式：优先通过 Celery 异步任务队列发送，不可用时降级为同步 SMTP 直连。
+    邮件内容：包含报销单号、金额、申请人信息，PDF 作为附件。
+
+    参数:
+        to_email     : 审批人邮箱地址
+        reimb_id     : 报销单号
+        total_amount : 报销金额
+        pdf_path     : PDF 报销单文件路径
+
+    返回:
+        sent : bool    是否发送成功
+    """
     logger.info(f"Email to={to_email} reimb={reimb_id} amount={total_amount} pdf={pdf_path}")
 
     sent = False
@@ -520,7 +575,30 @@ async def save_reimbursement_to_db(
     budget_remaining_after: float, description: str = "",
     user_id: str = "demo_user", user_name: str = "演示用户",
 ) -> dict:
-    """将报销单、发票明细写入数据库，并更新部门预算已使用金额"""
+    """
+    将报销申请持久化到数据库。一次调用同时写入三张表并更新预算。
+
+    调用时机：合规检查 + 预算检查全部通过后，PDF 生成之前。
+    写入内容：
+      1. reimbursements 表 — 报销单主记录
+      2. invoices 表 — 每张发票的明细记录
+      3. approval_records 表 — 初始待审批记录
+      4. 更新 department_budget 表 — 增加已使用金额
+
+    参数:
+        department             : 申请部门
+        expense_type           : travel / entertainment / office / other
+        total_amount           : 报销总金额
+        invoices               : 发票列表 [{invoice_code, invoice_number, amount, ...}]
+        need_special_approval  : 是否需要特殊审批（超标标记）
+        budget_remaining_after : 报销后剩余预算
+        user_id                : 员工工号（默认 demo_user）
+        user_name              : 员工姓名（默认 演示用户）
+
+    返回:
+        id                     : 生成的报销单号（12位）
+        status                 : pending（初始状态）
+    """
     from sqlalchemy import text
 
     reimb_id = uuid.uuid4().hex[:12]

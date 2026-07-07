@@ -27,25 +27,29 @@ PROJECT_DIR = BACKEND_DIR.parent
 IS_WINDOWS = platform.system() == "Windows"
 
 
-def _sh(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
-    """运行命令，自动处理 shell 和 cwd（跨平台兼容）"""
+def _sh(cmd: list[str], cwd: Path | None = None, *, check: bool = False) -> subprocess.CompletedProcess:
+    """运行命令，跨平台兼容。check=True 时失败抛异常"""
     target_dir = str(cwd or BACKEND_DIR)
+    use_shell = IS_WINDOWS  # Windows 上 docker/npm 等需要 shell
     proc = subprocess.run(
         cmd,
         cwd=target_dir,
-        capture_output=not sys.stdout.isatty(),
-        text=True,
-        shell=False if shutil.which(cmd[0]) else True,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="ignore",
+        shell=use_shell,
     )
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, proc.stdout, proc.stderr)
     return proc
 
 
-def _has_docker() -> bool:
-    """检测 docker compose 是否可用"""
+def _docker_engine_ok() -> bool:
+    """检测 Docker 引擎是否在运行（不只是 CLI 安装了）"""
     try:
         r = subprocess.run(
-            ["docker", "compose", "version"],
-            capture_output=True, text=True,
+            ["docker", "ps"],
+            capture_output=True, text=True, encoding="utf-8", errors="ignore",
+            shell=IS_WINDOWS,
         )
         return r.returncode == 0
     except (FileNotFoundError, OSError):
@@ -53,9 +57,9 @@ def _has_docker() -> bool:
 
 
 def _has_wsl() -> bool:
-    """检测 WSL 是否可用（Windows 下跑 bash 脚本）"""
+    """检测 WSL 是否可用"""
     try:
-        r = subprocess.run(["wsl", "--version"], capture_output=True, text=True)
+        r = subprocess.run(["wsl", "--version"], capture_output=True, text=True, shell=IS_WINDOWS)
         return r.returncode == 0
     except (FileNotFoundError, OSError):
         return False
@@ -67,44 +71,49 @@ def _has_wsl() -> bool:
 def data_start():
     """启动数据层 (PostgreSQL + Redis + MinIO)"""
     print("📦 启动数据层...")
-    if _has_docker():
-        print("   使用 Docker Compose...")
-        r = _sh(
-            ["docker", "compose", "up", "-d", "postgres", "redis", "minio", "minio-init"],
-            cwd=PROJECT_DIR,
-        )
-        if r.returncode != 0:
-            print(f"⚠️  Docker 启动失败:\n{r.stderr}")
-        else:
-            print("   等待健康检查...")
-            time.sleep(4)
-            _sh(["docker", "compose", "ps", "postgres", "redis", "minio"], cwd=PROJECT_DIR)
-    elif IS_WINDOWS and _has_wsl():
-        print("   使用 WSL 启动本地服务...")
-        _sh(["wsl", "bash", str(PROJECT_DIR / "manage-infra.sh").replace("\\", "/"), "start", "--local"])
-    else:
-        print("⚠️  未检测到 Docker/WSL，跳过数据层启动")
-        print("   (后端将使用 SQLite，不影响基本功能)")
+
+    if not _docker_engine_ok():
+        print("❌ Docker 引擎未运行！")
+        print("   请先打开 Docker Desktop 桌面应用，等待鲸鱼图标变绿")
+        print("   然后重新运行: uv run reimburse start")
+        print("")
+        print("   如果你不需要数据层，可以直接启动后端:")
+        print("     uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload")
+        sys.exit(1)
+
+    print("   Docker 引擎已就绪，启动容器...")
+    r = _sh(
+        ["docker", "compose", "up", "-d", "postgres", "redis", "minio", "minio-init"],
+        cwd=PROJECT_DIR,
+    )
+    if r.returncode != 0:
+        print(f"❌ Docker Compose 启动失败:")
+        print(f"   {r.stderr or r.stdout}")
+        print("   请检查 Docker Desktop 是否正常运行，或手动执行:")
+        print(f"     cd {PROJECT_DIR}")
+        print("     docker compose up -d postgres redis minio minio-init")
+        sys.exit(1)
+
+    print("   等待健康检查...")
+    time.sleep(4)
+    _sh(["docker", "compose", "ps", "postgres", "redis", "minio"], cwd=PROJECT_DIR)
 
 
 def data_stop():
     """停止数据层"""
     print("🛑 停止数据层...")
-    if _has_docker():
+    if _docker_engine_ok():
         _sh(["docker", "compose", "stop", "postgres", "redis", "minio"], cwd=PROJECT_DIR)
-    elif IS_WINDOWS and _has_wsl():
-        _sh(["wsl", "bash", str(PROJECT_DIR / "manage-infra.sh").replace("\\", "/"), "stop"])
+    else:
+        print("   Docker 引擎未运行，无需停止")
 
 
 def data_status():
     """查看数据层状态"""
-    if _has_docker():
+    if _docker_engine_ok():
         _sh(["docker", "compose", "ps", "postgres", "redis", "minio"], cwd=PROJECT_DIR)
-    elif IS_WINDOWS and _has_wsl():
-        _sh(["wsl", "bash", str(PROJECT_DIR / "manage-infra.sh").replace("\\", "/"), "status"])
     else:
-        print("数据层状态: 未运行 (无 Docker/WSL)")
-        print("后端使用 SQLite — 可直接启动")
+        print("数据层状态: Docker 引擎未运行")
 
 
 # ============================================================================
@@ -122,18 +131,22 @@ def db_init():
             "import asyncio\n"
             "from app.core.database import engine, Base\n"
             "async def _i():\n"
-            "    async with engine.begin() as c:\n"
-            "        await c.run_sync(Base.metadata.create_all)\n"
-            "    await engine.dispose()\n"
+            "  async with engine.begin() as c:\n"
+            "    await c.run_sync(Base.metadata.create_all)\n"
+            "  await engine.dispose()\n"
             "asyncio.run(_i())\n"
-            "print('   ✅ 表已创建')\n"
+            "print('   ✅ 表已创建')"
         )
         _sh(["uv", "run", "python", "-c", code], cwd=BACKEND_DIR)
 
     print("   [2/3] 导入种子数据...")
-    _sh(["uv", "run", "python", "seed.py"], cwd=BACKEND_DIR)
+    r2 = _sh(["uv", "run", "python", "seed.py"], cwd=BACKEND_DIR)
+    if r2.returncode != 0:
+        # 种子数据失败通常是数据库连不上
+        print("   ⚠️  种子数据导入失败 — 数据库可能未就绪")
+        print(f"   {r2.stderr[-300:] if r2.stderr else '(无错误详情)'}")
 
-    print("   [3/3] ✅ 数据库就绪")
+    print("   [3/3] ✅ 数据库初始化完成")
 
 
 # ============================================================================
@@ -150,7 +163,6 @@ def start_backend(reload: bool = True, port: int = 8000, host: str = "0.0.0.0"):
     print(f"   健康检查: http://{host}:{port}/health")
     print("   Ctrl+C 停止\n")
 
-    # 前台运行，让用户能看到日志和 Ctrl+C 退出
     subprocess.run(cmd, cwd=str(BACKEND_DIR))
 
 

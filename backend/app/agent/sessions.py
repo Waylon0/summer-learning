@@ -59,14 +59,21 @@ class SessionContext:
     def touch(self):
         self.last_activity = time.time()
 
+    # 消息保留策略：存储至多 MAX_STORED 条，LLM 上下文取最近 MAX_CONTEXT 条
+    MAX_STORED = 20   # 会话存储上限（防内存溢出）
+    MAX_CONTEXT = 6    # 传给 LLM 的最近消息数（3轮对话，控 token 消耗）
+
     def add_message(self, role: str, content: str):
         self.messages.append({"role": role, "content": content})
-        if len(self.messages) > 20:
-            self.messages = self.messages[-20:]
+        if len(self.messages) > self.MAX_STORED:
+            self.messages = self.messages[-self.MAX_STORED:]
         self.turn_count += 1
         self.touch()
 
-    def get_recent_messages(self, n: int = 6) -> list[dict]:
+    def get_recent_messages(self, n: int = None) -> list[dict]:
+        """获取最近 N 条消息作为 LLM 上下文，默认 6 条（3 轮对话）"""
+        if n is None:
+            n = self.MAX_CONTEXT
         return self.messages[-n:]
 
     def get_context_summary(self) -> str:

@@ -16,7 +16,8 @@ logs/
 docker-data/
 data/uploads/*
 !data/uploads/.gitkeep
-backend/data/
+backend/data/*
+!backend/data/knowledge/
 backend/logs/
 infra/redis/redis-server
 infra/redis/redis-cli
@@ -26,3 +27,4 @@ infra/pids/
 infra/dump.rdb
 infra/redis/data/
 infra/*.tar.gz
+docs/
