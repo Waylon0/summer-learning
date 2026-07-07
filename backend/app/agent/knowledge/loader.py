@@ -185,6 +185,18 @@ def get_or_build_index() -> bool:
     return False
 
 
+def rebuild_index() -> bool:
+    """强制重建知识库索引（忽略缓存，删除旧索引后重建）"""
+    global _available, _doc_hashes
+    _doc_hashes.clear()
+    _available = False
+    docs = _load_documents()
+    if not docs:
+        logger.warning("No knowledge documents found to index")
+        return False
+    return _build_index(docs)
+
+
 def is_available() -> bool:
     """知识库是否可用"""
     return _available

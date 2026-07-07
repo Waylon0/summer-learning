@@ -59,6 +59,7 @@ class Settings(BaseSettings):
 
     # ===================== 存储配置 =====================
     STORAGE_BACKEND: str = "local"  # local | minio
+    CHROMA_PERSIST_DIR: str = "./data/chroma"
     UPLOAD_DIR: str = "./data/uploads"
     LOG_LEVEL: str = "INFO"
 

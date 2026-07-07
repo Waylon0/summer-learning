@@ -118,14 +118,59 @@ DEPARTMENT_DICT = {
 }
 
 # 费用类型 → 标准化映射
+# 通用费用类型（所有人可用）
 EXPENSE_TYPE_MAP = {
+    # 差旅
     "差旅": "travel", "出差": "travel", "travel": "travel",
-    "机票": "travel", "火车": "travel", "酒店": "travel", "住宿": "travel",
+    "机票": "travel", "火车": "travel", "高铁": "travel", "动车": "travel",
+    "酒店": "travel", "住宿": "travel", "交通": "travel",
+    # 招待
     "招待": "entertainment", "宴请": "entertainment", "请客": "entertainment",
-    "entertainment": "entertainment",
-    "办公": "office", "采购": "office", "文具": "office", "office": "office",
-    "设备": "office", "耗材": "office",
-    "other": "other", "其他": "other",
+    "entertainment": "entertainment", "商务宴请": "entertainment",
+    # 办公
+    "办公": "office", "文具": "office", "office": "office",
+    "耗材": "office", "打印": "office", "复印": "office",
+    "采购": "office",
+    # 通信
+    "通信": "communication", "电话": "communication", "网络": "communication",
+    "话费": "communication", "手机": "communication", "宽带": "communication",
+    "communication": "communication",
+    # 市内交通
+    "交通": "transport", "打车": "transport", "出租车": "transport",
+    "公交": "transport", "地铁": "transport", "transport": "transport",
+    "停车": "transport", "加油": "transport",
+    # 会议
+    "会议": "meeting", "会议室": "meeting", "meeting": "meeting",
+    "研讨会": "meeting", "峰会": "meeting",
+    # 培训
+    "培训": "training", "课程": "training", "学习": "training",
+    "培训费": "training", "training": "training", "教材": "training",
+    # 研发专属
+    "研发材料": "rd_materials", "研发设备": "rd_equipment",
+    "技术资料": "rd_materials", "实验": "rd_materials",
+    "样机": "rd_materials", "原型": "rd_materials",
+    # 技术专属
+    "技术引进": "tech_acquisition", "软件许可": "software_license",
+    "license": "software_license", "授权": "software_license", "SaaS": "software_license",
+    # 市场专属
+    "广告": "advertisement", "推广": "advertisement", "宣传": "advertisement",
+    "展会": "exhibition", "展览": "exhibition", "广告费": "advertisement",
+    # 销售专属
+    "客户维护": "client_maintenance", "商务礼品": "client_maintenance",
+    "客户": "client_maintenance",
+    # 财务专属
+    "审计": "audit", "审计费": "audit", "审计服务": "audit",
+    "税务": "audit",
+    # 人事专属
+    "招聘": "recruitment", "猎头": "recruitment", "入职": "recruitment",
+    "招聘费": "recruitment",
+    # 行政专属
+    "装修": "renovation", "装修改造": "renovation",
+    # 运维专属
+    "云服务": "cloud_service", "服务器": "cloud_service", "云计算": "cloud_service",
+    "云资源": "cloud_service",
+    # 兜底
+    "other": "other", "其他": "other", "其他费用": "other",
 }
 
 # 交通方式

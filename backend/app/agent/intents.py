@@ -173,15 +173,37 @@ _KEYWORD_INTENT_MAP = {
     "报销": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
     "申请": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
     "提交": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    # 差旅
     "差旅": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.TRAVEL_EXPENSE),
     "出差": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.TRAVEL_EXPENSE),
     "机票": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.TRAVEL_EXPENSE),
     "酒店": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.TRAVEL_EXPENSE),
+    # 招待
     "招待": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.ENTERTAINMENT_EXPENSE),
     "宴请": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.ENTERTAINMENT_EXPENSE),
     "请客": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.ENTERTAINMENT_EXPENSE),
+    # 办公
     "办公": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.OFFICE_EXPENSE),
     "采购": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.OFFICE_EXPENSE),
+    # 通信
+    "通信": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "话费": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    # 会议
+    "会议": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    # 培训
+    "培训": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    # 部门专属
+    "研发材料": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "研发设备": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "技术引进": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "软件许可": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "广告": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "展会": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "审计": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "招聘": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "装修": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    "云服务": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
+    # 预支
     "预支": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.ADVANCE_REQUEST),
     "借款": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.ADVANCE_REQUEST),
 

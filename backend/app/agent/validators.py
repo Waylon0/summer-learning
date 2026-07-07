@@ -52,7 +52,37 @@ KNOWN_DEPARTMENTS = {
     "产品部", "设计部", "法务部", "公关部",
 }
 
-KNOWN_EXPENSE_TYPES = {"travel", "entertainment", "office", "other"}
+# 通用费用类型（所有部门可用）
+COMMON_EXPENSE_TYPES = {
+    "travel", "entertainment", "office", "communication",
+    "transport", "meeting", "training", "other",
+}
+
+# 部门专属费用类型
+DEPARTMENT_EXPENSE_TYPES: dict[str, set[str]] = {
+    "研发部": {"rd_materials", "rd_equipment"},
+    "技术部": {"tech_acquisition", "software_license"},
+    "市场部": {"advertisement", "exhibition"},
+    "销售部": {"client_maintenance"},
+    "财务部": {"audit"},
+    "人事部": {"recruitment"},
+    "人力资源部": {"recruitment"},
+    "行政部": {"renovation"},
+    "运维部": {"cloud_service"},
+}
+
+# 合并所有已知类型
+KNOWN_EXPENSE_TYPES = COMMON_EXPENSE_TYPES | {
+    t for types in DEPARTMENT_EXPENSE_TYPES.values() for t in types
+}
+
+# 部门中文名标准化
+DEPT_NORMALIZE = {
+    "人力资源部": "人事部",
+    "研发": "研发部", "技术": "技术部", "市场": "市场部",
+    "销售": "销售部", "财务": "财务部", "人事": "人事部",
+    "行政": "行政部", "运维": "运维部", "运营": "运营部",
+}
 
 
 # =============================================================================
@@ -91,15 +121,25 @@ def pre_validate(
             f"已知部门: {', '.join(sorted(KNOWN_DEPARTMENTS))}"
         )
 
-    # 3. 费用类型校验
+    # 3. 费用类型校验（含部门专属类型检查）
     if expense_type and expense_type not in KNOWN_EXPENSE_TYPES:
         result.errors.append(
             f"费用类型 '{expense_type}' 无效。"
-            f"有效值: {', '.join(sorted(KNOWN_EXPENSE_TYPES))}"
+            f"有效通用类型: {', '.join(sorted(COMMON_EXPENSE_TYPES))}"
         )
         result.passed = False
 
-    # 4. 说明校验（非阻塞）
+    # 4. 部门专属类型校验（部门不匹配时警告）
+    if expense_type and expense_type not in COMMON_EXPENSE_TYPES and department:
+        norm_dept = DEPT_NORMALIZE.get(department, department)
+        allowed = DEPARTMENT_EXPENSE_TYPES.get(norm_dept, set())
+        if expense_type not in allowed:
+            result.warnings.append(
+                f"费用类型 '{expense_type}' 是部门专属类型，"
+                f"当前部门 '{department}' 不在授权部门列表中。"
+            )
+
+    # 5. 说明校验（非阻塞）
     if not description or len(description.strip()) < 5:
         result.warnings.append("报销说明过于简短，建议补充详细描述以便审批。")
 

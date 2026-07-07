@@ -866,10 +866,10 @@ async def query_status(state: ReimburseState) -> dict:
             content=f"📋 报销单 {reimb_id}\n状态: {status_cn}\n审批流程:\n{text}"
         )]}
 
-    # --- 路径 B：无报销单号 → 列表查询（泛化查询）---
-    logger.info(f"No reimb_id provided, falling back to list query (sub_intent={sub_intent})")
+    # --- 路径 B：无报销单号 → 多维度列表查询 ---
+    logger.info(f"No reimb_id provided, doing multi-dimension search")
 
-    # 从用户消息中识别是否在筛选特定状态
+    # 从用户消息中抽取筛选条件
     status_filter = ""
     status_keywords = {
         "待审批": "pending", "待审": "pending",
@@ -883,31 +883,58 @@ async def query_status(state: ReimburseState) -> dict:
             status_filter = val
             break
 
-    from app.agent.tools.reimburse_tools import query_reimbursement_list as _qlist
-    records = await _qlist(status=status_filter, limit=30)
+    # 从实体中提取部门/类型筛选
+    dept_filter = entities.get("department", "")
+    type_filter = entities.get("expense_type", "")
 
+    # 从消息中提取金额筛选
+    from app.agent.entities import _extract_amount as _ext_amt
+    has_money_kw = any(k in last_msg for k in ["元", "¥", "￥"])
+    amt_exact = _ext_amt(last_msg) if has_money_kw else None
+    amt_min = None
+    amt_max = None
+    range_match = re.search(r'(?:大于|超过|>=|>)\s*(\d[\d,]*)', last_msg)
+    if range_match:
+        amt_min = float(range_match.group(1).replace(",", ""))
+    range_match = re.search(r'(?:小于|低于|<=|<|不超过)\s*(\d[\d,]*)', last_msg)
+    if range_match:
+        amt_max = float(range_match.group(1).replace(",", ""))
+
+    from app.agent.tools.reimburse_tools import query_reimbursement_status as _qsearch
+    result = await _qsearch(
+        status=status_filter,
+        department=dept_filter,
+        expense_type=type_filter,
+        amount_min=amt_min,
+        amount_max=amt_max,
+        amount_exact=amt_exact,
+        keyword=entities.get("description", "") or "",
+        limit=30,
+    )
+
+    records = result.get("results", [])
     if not records:
+        # 可能是按 ID 查询无结果的回退
+        filters_used = [f for f in [status_filter, dept_filter, type_filter] if f]
+        hint = f"（筛选条件: {', '.join(filters_used)}）" if filters_used else ""
         return {"messages": [AIMessage(
-            content='📋 暂无报销记录。\n\n你可以说 "我要报销差旅费 1500 元，部门技术部" 来创建你的第一条报销申请！'
+            content=f"📋 未找到符合条件的报销记录{hint}。\n\n可以说 \"我的报销记录\" 查看全部，或提供具体筛选条件。"
         )]}
 
-    # 格式化列表响应
     status_labels = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
-    type_labels = {"travel": "差旅", "entertainment": "招待", "office": "办公", "other": "其他"}
-
-    lines = [f"📋 共找到 {len(records)} 条报销记录："]
-    for i, r in enumerate(records, 1):
-        sid = r["id"][:10]
-        status_cn = status_labels.get(r["status"], r["status"])
-        type_cn = type_labels.get(r["expense_type"], r["expense_type"])
-        amount = f"¥{r['total_amount']:,.2f}"
-        extra = ""
-        if r.get("need_special_approval"):
-            extra = " ⚠️需特殊审批"
+    dept_map = {"travel": "差旅", "entertainment": "招待", "office": "办公", "other": "其他"}
+    lines = [f"📋 找到 {len(records)} 条报销记录:\n"]
+    for r in records[:15]:
+        s = status_labels.get(r["status"], r["status"])
+        t = dept_map.get(r.get("expense_type", ""), r.get("expense_type", ""))
+        id_short = r["reimb_id"][:8] if r.get("reimb_id") else "?"
         lines.append(
-            f"  {i}. [{sid}...] {r['user_name']} · {r['department']} · {type_cn} {amount} — {status_cn}{extra}"
+            f"  [{s}] {t} ¥{r.get('total_amount', 0):,.2f} — {r.get('description', '')[:20]} "
+            f"(#{id_short} {r.get('user_name', '')})"
         )
-    lines.append(f"\n💡 输入具体报销单号的后几位可查看详情，例如：\"查询 {records[0]['id'][:8]}\"")
+    if len(records) > 15:
+        lines.append(f"  ... 还有 {len(records) - 15} 条，请输入更精确的筛选条件")
+    lines.append(f"\n输入 \"查询 {records[0]['reimb_id'][:8] if records else ''}\" 查看单条详情")
 
     return {"messages": [AIMessage(content="\n".join(lines))]}
 

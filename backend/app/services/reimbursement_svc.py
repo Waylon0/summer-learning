@@ -15,7 +15,8 @@ app/services/reimbursement_svc.py — 报销业务逻辑层（增强版）
 =============================================================================
 """
 from decimal import Decimal
-from sqlalchemy import select, func, and_
+from typing import Optional
+from sqlalchemy import select, func, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from loguru import logger
@@ -129,45 +130,105 @@ class ReimbursementService:
             raise ReimbursementNotFoundError(reimb_id)
         return reimb
 
-    async def list_by_user(self, user_id: str, limit: int = 50, offset: int = 0) -> list[Reimbursement]:
-        """查询某用户的所有报销单"""
-        result = await self.db.execute(
-            select(Reimbursement)
-            .options(selectinload(Reimbursement.invoices), selectinload(Reimbursement.approvals))
-            .where(Reimbursement.user_id == user_id)
-            .order_by(Reimbursement.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        reimbs = list(result.scalars().all())
-        logger.info(f"查询到 {len(reimbs)} 条报销单 (user={user_id})")
-        return reimbs
+    async def search(
+        self,
+        user_id: str = None,
+        status: str = None,
+        department: str = None,
+        expense_type: str = None,
+        keyword: str = None,
+        amount_min: float = None,
+        amount_max: float = None,
+        amount_exact: float = None,
+        date_from: str = None,
+        date_to: str = None,
+        sort_by: str = "created_at",
+        sort_dir: str = "desc",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Reimbursement], int]:
+        """
+        多维度综合查询报销单。
 
-    async def list_by_status(
-        self, status: str = None, start_date: str = None, end_date: str = None,
-        limit: int = 50, offset: int = 0,
-    ) -> list[Reimbursement]:
-        """按状态/日期范围查询报销单列表（支持分页）"""
+        支持维度:
+          - 按用户: user_id
+          - 按状态: status (pending/approved/rejected/returned/paid/cancelled)
+          - 按部门: department
+          - 按费用类型: expense_type (travel/entertainment/office/other)
+          - 按关键词: keyword → 模糊搜索描述 (ILIKE)
+          - 按金额: amount_min / amount_max (范围) 或 amount_exact (精确)
+          - 按日期: date_from / date_to
+          - 排序: sort_by (created_at/total_amount/department) + sort_dir (asc/desc)
+          - 分页: limit + offset
+
+        Returns:
+            (报销单列表, 总条数)
+        """
         conditions = []
+        if user_id:
+            conditions.append(Reimbursement.user_id == user_id)
         if status:
             conditions.append(Reimbursement.status == status)
-        if start_date:
-            conditions.append(Reimbursement.created_at >= start_date)
-        if end_date:
-            conditions.append(Reimbursement.created_at <= end_date)
+        if department:
+            conditions.append(Reimbursement.department == department)
+        if expense_type:
+            conditions.append(Reimbursement.expense_type == expense_type)
+        if keyword:
+            conditions.append(Reimbursement.description.ilike(f"%{keyword}%"))
+        if amount_exact is not None:
+            conditions.append(Reimbursement.total_amount == Decimal(str(amount_exact)))
+        else:
+            if amount_min is not None:
+                conditions.append(Reimbursement.total_amount >= Decimal(str(amount_min)))
+            if amount_max is not None:
+                conditions.append(Reimbursement.total_amount <= Decimal(str(amount_max)))
+        if date_from:
+            conditions.append(Reimbursement.created_at >= date_from)
+        if date_to:
+            conditions.append(Reimbursement.created_at <= date_to)
 
+        # 排序字段白名单（防注入）
+        sort_columns = {
+            "created_at": Reimbursement.created_at,
+            "total_amount": Reimbursement.total_amount,
+            "department": Reimbursement.department,
+            "status": Reimbursement.status,
+            "expense_type": Reimbursement.expense_type,
+        }
+        sort_col = sort_columns.get(sort_by, Reimbursement.created_at)
+        if sort_dir == "asc":
+            order_clause = sort_col.asc()
+        else:
+            order_clause = sort_col.desc()
+
+        base_query = select(Reimbursement).options(
+            selectinload(Reimbursement.invoices),
+            selectinload(Reimbursement.approvals),
+        )
+        where_clause = and_(*conditions) if conditions else True
+
+        # 查总数
+        count_stmt = select(func.count()).select_from(Reimbursement).where(where_clause)
+        total = (await self.db.execute(count_stmt)).scalar()
+
+        # 查数据
         stmt = (
-            select(Reimbursement)
-            .options(selectinload(Reimbursement.invoices), selectinload(Reimbursement.approvals))
-            .where(and_(*conditions) if conditions else True)
-            .order_by(Reimbursement.created_at.desc())
+            base_query
+            .where(where_clause)
+            .order_by(order_clause)
             .offset(offset)
             .limit(limit)
         )
         result = await self.db.execute(stmt)
         reimbs = list(result.scalars().all())
-        logger.info(f"查询到 {len(reimbs)} 条报销单 (status={status})")
-        return reimbs
+
+        logger.info(
+            f"查询报销单: {len(reimbs)}/{total} 条 "
+            f"(filters: user={user_id} status={status} dept={department} "
+            f"type={expense_type} kw={keyword} amt={amount_min}-{amount_max} "
+            f"sort={sort_by} {sort_dir})"
+        )
+        return reimbs, total
 
     async def update_status(self, reimb_id: str, status: str) -> Reimbursement:
         """更新报销单状态"""

@@ -42,18 +42,55 @@ async def get_reimbursement(reimb_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("", response_model=list[ReimbursementResponse])
 async def list_reimbursements(
+    # 基础筛选
     user_id: str = None,
     status: str = None,
+    department: str = None,
+    expense_type: str = None,
+    # 关键词搜索
+    keyword: str = None,
+    # 金额筛选
+    amount_min: float = None,
+    amount_max: float = None,
+    amount_exact: float = None,
+    # 日期筛选
+    date_from: str = None,
+    date_to: str = None,
+    # 排序与分页
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
-    """查询报销单列表（支持分页）"""
+    """
+    多维度查询报销单列表。
+
+    查询示例:
+      /reimbursements?status=pending&department=技术部
+      /reimbursements?amount_min=1000&amount_max=5000
+      /reimbursements?amount_exact=1500
+      /reimbursements?keyword=上海出差&expense_type=travel
+      /reimbursements?date_from=2026-01-01&date_to=2026-12-31
+      /reimbursements?sort_by=total_amount&sort_dir=desc&limit=10
+    """
     svc = ReimbursementService(db)
-    if user_id:
-        reimbs = await svc.list_by_user(user_id, limit=limit, offset=offset)
-    else:
-        reimbs = await svc.list_by_status(status, limit=limit, offset=offset)
+    reimbs, total = await svc.search(
+        user_id=user_id,
+        status=status,
+        department=department,
+        expense_type=expense_type,
+        keyword=keyword,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        amount_exact=amount_exact,
+        date_from=date_from,
+        date_to=date_to,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        limit=limit,
+        offset=offset,
+    )
     return [_to_response(r) for r in reimbs]
 
 

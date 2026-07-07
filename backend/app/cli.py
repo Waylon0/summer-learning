@@ -10,6 +10,7 @@ app/cli.py — ReimburseAgent 一键启动命令行工具 (跨平台)
   uv run reimburse data stop       # 停止数据层
   uv run reimburse data status     # 查看数据层状态
   uv run reimburse db init         # 初始化数据库 (迁移 + 种子数据)
+  uv run reimburse kb rebuild      # 重建 RAG 知识库向量索引
 ===========================================================================
 """
 import os
@@ -177,6 +178,17 @@ def cmd_db(args):
     db_init()
 
 
+def cmd_kb_rebuild(args):
+    """重建 RAG 知识库向量索引"""
+    print("🧠 重建知识库向量索引...")
+    from app.agent.knowledge.loader import rebuild_index
+    success = rebuild_index()
+    if success:
+        print("✅ 知识库索引已重建")
+    else:
+        print("⚠️  知识库索引重建失败 (可能 chromadb 未安装)")
+
+
 # ============================================================================
 # CLI 入口
 # ============================================================================
@@ -206,6 +218,10 @@ def main():
     p_db = sub.add_parser("db", help="数据库管理")
     p_db.add_argument("action", choices=["init"], default="init", nargs="?")
     p_db.set_defaults(func=cmd_db)
+
+    p_kb = sub.add_parser("kb", help="知识库管理")
+    p_kb.add_argument("action", choices=["rebuild"], default="rebuild", nargs="?")
+    p_kb.set_defaults(func=cmd_kb_rebuild)
 
     args = parser.parse_args()
     if not args.command:

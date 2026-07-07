@@ -587,52 +587,130 @@ async def save_reimbursement_to_db(
 
 
 # =============================================================================
-# 工具 7：查询报销进度
+# 工具 7：查询报销进度 / 多维度搜索报销单
 # =============================================================================
 async def query_reimbursement_status(
-    reimb_id: str = "", date_from: str = "", date_to: str = ""
+    reimb_id: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    department: str = "",
+    expense_type: str = "",
+    keyword: str = "",
+    amount_min: float = None,
+    amount_max: float = None,
+    amount_exact: float = None,
+    status: str = "",
+    limit: int = 20,
 ) -> dict:
-    """从数据库查询报销单的审批流程状态"""
+    """多维度查询报销单。
+
+    支持:
+      - 按报销单号精确查询
+      - 按金额范围/精确金额查询
+      - 按关键词搜索描述
+      - 按部门、类型、状态筛选
+      - 按日期范围筛选
+    """
     from sqlalchemy import text
+
     try:
         async with engine.connect() as conn:
+            # 按 ID 精确查询
             if reimb_id:
-                result = await conn.execute(
-                    text("SELECT status FROM reimbursements WHERE id = :rid"),
+                r = await conn.execute(
+                    text("SELECT id, status, total_amount, department, expense_type, description, created_at "
+                         "FROM reimbursements WHERE id = :rid"),
                     {"rid": reimb_id},
                 )
-                reimb = result.fetchone()
+                reimb = r.fetchone()
                 if reimb:
                     ar = await conn.execute(
-                        text(
-                            "SELECT step, approver, action FROM approval_records "
-                            "WHERE reimbursement_id = :rid ORDER BY step"
-                        ),
+                        text("SELECT step, approver, action, comment, acted_at "
+                             "FROM approval_records WHERE reimbursement_id = :rid ORDER BY step"),
                         {"rid": reimb_id},
                     )
                     approvals = ar.fetchall()
                     return {
-                        "reimb_id": reimb_id,
+                        "reimb_id": reimb.id,
                         "status": reimb.status,
+                        "department": reimb.department,
+                        "expense_type": reimb.expense_type,
+                        "total_amount": float(reimb.total_amount),
+                        "description": reimb.description,
+                        "created_at": str(reimb.created_at),
                         "steps": [
-                            {"step": a.step, "approver": a.approver, "action": a.action}
+                            {"step": a.step, "approver": a.approver,
+                             "action": a.action, "acted_at": str(a.acted_at)}
                             for a in approvals
                         ] or [
                             {"step": 1, "approver": "部门经理", "action": "待审批"},
                             {"step": 2, "approver": "财务总监", "action": "等待中"},
                         ],
                     }
+                return {"reimb_id": reimb_id, "status": "not_found", "steps": []}
+
+            # 多维度搜索
+            conditions = []
+            params = {}
+            if status:
+                conditions.append("r.status = :status")
+                params["status"] = status
+            if department:
+                conditions.append("r.department = :dept")
+                params["dept"] = department
+            if expense_type:
+                conditions.append("r.expense_type = :etype")
+                params["etype"] = expense_type
+            if keyword:
+                conditions.append("r.description LIKE :kw")
+                params["kw"] = f"%{keyword}%"
+            if amount_exact is not None:
+                conditions.append("r.total_amount = :amt_exact")
+                params["amt_exact"] = float(amount_exact)
+            else:
+                if amount_min is not None:
+                    conditions.append("r.total_amount >= :amt_min")
+                    params["amt_min"] = float(amount_min)
+                if amount_max is not None:
+                    conditions.append("r.total_amount <= :amt_max")
+                    params["amt_max"] = float(amount_max)
+            if date_from:
+                conditions.append("r.created_at >= :dfrom")
+                params["dfrom"] = date_from
+            if date_to:
+                conditions.append("r.created_at <= :dto")
+                params["dto"] = date_to
+
+            params["limit"] = min(limit, 100)
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            sql = f"""
+                SELECT id, status, total_amount, department, expense_type, description, created_at, user_name
+                FROM reimbursements r
+                {where_clause}
+                ORDER BY r.created_at DESC
+                LIMIT :limit
+            """
+            rows = (await conn.execute(text(sql), params)).fetchall()
+            return {
+                "count": len(rows),
+                "results": [
+                    {
+                        "reimb_id": row.id,
+                        "status": row.status,
+                        "department": row.department,
+                        "expense_type": row.expense_type,
+                        "total_amount": float(row.total_amount),
+                        "description": row.description or "",
+                        "user_name": row.user_name,
+                        "created_at": str(row.created_at),
+                    }
+                    for row in rows
+                ],
+            }
     except Exception as e:
         logger.warning(f"DB query failed for status check: {e}")
 
-    return {
-        "reimb_id": reimb_id or "N/A",
-        "status": "pending",
-        "steps": [
-            {"step": 1, "approver": "部门经理", "action": "待审批"},
-            {"step": 2, "approver": "财务总监", "action": "等待中"},
-        ],
-    }
+    return {"reimb_id": reimb_id or "N/A", "status": "unknown", "steps": [], "results": []}
 
 
 # =============================================================================

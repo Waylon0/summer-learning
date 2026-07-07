@@ -23,22 +23,46 @@ SEED_BUDGETS = [
 ]
 
 SEED_POLICIES = [
-    {
-        "expense_type": "travel", "max_per_trip": 10000, "daily_limit": 500,
-        "description": "差旅费：单次上限 ¥10,000，日标准 ¥500",
-    },
-    {
-        "expense_type": "entertainment", "max_per_event": 3000, "per_person_limit": 200,
-        "description": "招待费：单次上限 ¥3,000，人均 ¥200",
-    },
-    {
-        "expense_type": "office", "max_per_item": 5000,
-        "description": "办公用品：单品上限 ¥5,000",
-    },
-    {
-        "expense_type": "other", "max_per_request": 2000,
-        "description": "其他费用：单次上限 ¥2,000",
-    },
+    # ---- 通用类型 ----
+    {"expense_type": "travel", "max_per_trip": 10000, "daily_limit": 500,
+     "description": "差旅费：单次上限 ¥10,000，住宿日标准 ¥500"},
+    {"expense_type": "entertainment", "max_per_event": 3000, "per_person_limit": 200,
+     "description": "招待费：单次上限 ¥3,000，人均 ¥200"},
+    {"expense_type": "office", "max_per_item": 5000,
+     "description": "办公用品：单品上限 ¥5,000"},
+    {"expense_type": "communication", "max_per_request": 500,
+     "description": "通信费：月度上限 ¥500"},
+    {"expense_type": "transport", "max_per_request": 300,
+     "description": "市内交通费：单次上限 ¥300"},
+    {"expense_type": "meeting", "max_per_request": 8000,
+     "description": "会议费：单次上限 ¥8,000"},
+    {"expense_type": "training", "max_per_request": 5000,
+     "description": "培训费：单次上限 ¥5,000"},
+    {"expense_type": "other", "max_per_request": 2000,
+     "description": "其他费用：单次上限 ¥2,000"},
+    # ---- 部门专属类型 ----
+    {"expense_type": "rd_materials", "max_per_request": 20000,
+     "description": "研发材料费：单次上限 ¥20,000 (研发部)"},
+    {"expense_type": "rd_equipment", "max_per_request": 50000,
+     "description": "研发设备费：单次上限 ¥50,000 (研发部)"},
+    {"expense_type": "tech_acquisition", "max_per_request": 100000,
+     "description": "技术引进费：单次上限 ¥100,000 (技术部)"},
+    {"expense_type": "software_license", "max_per_request": 30000,
+     "description": "软件许可费：年度上限 ¥30,000 (技术部)"},
+    {"expense_type": "advertisement", "max_per_request": 50000,
+     "description": "广告推广费：单次上限 ¥50,000 (市场部)"},
+    {"expense_type": "exhibition", "max_per_request": 30000,
+     "description": "展会费：单次上限 ¥30,000 (市场部)"},
+    {"expense_type": "client_maintenance", "max_per_request": 5000,
+     "description": "客户维护费：单次上限 ¥5,000 (销售部)"},
+    {"expense_type": "audit", "max_per_request": 20000,
+     "description": "审计服务费：单次上限 ¥20,000 (财务部)"},
+    {"expense_type": "recruitment", "max_per_request": 10000,
+     "description": "招聘费：单次上限 ¥10,000 (人事部)"},
+    {"expense_type": "renovation", "max_per_request": 50000,
+     "description": "办公室装修费：单次上限 ¥50,000 (行政部)"},
+    {"expense_type": "cloud_service", "max_per_request": 20000,
+     "description": "云服务费：月度上限 ¥20,000 (运维部)"},
 ]
 
 
