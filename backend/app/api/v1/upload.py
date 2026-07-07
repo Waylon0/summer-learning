@@ -7,12 +7,13 @@ app/api/v1/upload.py — 文件上传 API
 """
 import os
 import re
+
 from fastapi import APIRouter, UploadFile, File
 from loguru import logger
 
 from app.core.config import get_settings
 from app.core.exceptions import FileValidationError, StorageServiceError
-from app.services.ocr_svc import upload_file as upload_to_minio
+from app.services.ocr_svc import upload_file as upload_to_storage
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -51,7 +52,7 @@ def _sanitize_filename(filename: str) -> str:
 
 @router.post("")
 async def upload_invoice(file: UploadFile = File(..., max_length=MAX_FILE_SIZE)):
-    """上传发票/票据文件到 MinIO"""
+    """上传发票/票据文件"""
     safe_filename = _sanitize_filename(file.filename or "invoice.pdf")
 
     # --- 步骤1：扩展名校验 ---
@@ -76,7 +77,7 @@ async def upload_invoice(file: UploadFile = File(..., max_length=MAX_FILE_SIZE))
 
     # --- 步骤4：上传 ---
     try:
-        object_name = await upload_to_minio(
+        object_name = await upload_to_storage(
             content,
             safe_filename,
             file.content_type or "application/octet-stream",

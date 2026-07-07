@@ -18,7 +18,7 @@ import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from loguru import logger
 
 from app.core.config import get_settings, setup_logging
@@ -55,20 +55,45 @@ async def lifespan(app: FastAPI):
     logger.info(f"{'='*60}")
 
     # --- 启动：自动创建数据库表 ---
+    import asyncio as _asyncio
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        async with _asyncio.timeout(8):
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
         logger.info("✅ Database tables ready")
+    except TimeoutError:
+        logger.warning("⚠️  Database connection timeout — tables may not be created")
     except Exception as e:
-        logger.error(f"❌ Database init failed: {e}")
+        db_url = settings.DATABASE_URL
+        # 脱敏打印：隐藏密码
+        from urllib.parse import urlparse as _urlparse
+        parsed = _urlparse(db_url)
+        is_sqlite = db_url.startswith("sqlite")
+        if is_sqlite:
+            logger.error(f"❌ Database init failed ({type(e).__name__}): {e}")
+        else:
+            host_port = f"{parsed.hostname}:{parsed.port}" if parsed.hostname else "unknown"
+            logger.error(f"❌ Database init failed: {e}")
+            logger.error(f"💡 请检查:")
+            logger.error(f"   1. 数据库地址可访问: {host_port}")
+            logger.error(f"   2. PostgreSQL 是否在 {host_port} 上运行")
+            logger.error(f"   3. pg_hba.conf 是否允许外部连接 (host all all 0.0.0.0/0 md5)")
+            logger.error(f"   4. 防火墙是否放行端口 {parsed.port}")
+            logger.error(f"   5. .env 中 DATABASE_URL 是否正确")
 
-    # --- 启动：初始化 MinIO 存储桶 ---
+    # --- 启动：初始化存储 ---
     try:
-        from app.services.ocr_svc import init_minio_bucket
-        init_minio_bucket()
-        logger.info("✅ MinIO bucket ready")
+        from app.services.ocr_svc import init_minio_bucket, STORAGE_BACKEND
+        if STORAGE_BACKEND == "minio":
+            init_minio_bucket()
+            logger.info("✅ MinIO bucket ready")
+        else:
+            from pathlib import Path
+            upload_dir = Path(settings.UPLOAD_DIR) / "invoices"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"✅ Local storage ready: {upload_dir}")
     except Exception:
-        logger.warning("⚠️  MinIO not available — file upload disabled")
+        logger.warning("⚠️  Storage init failed — file upload may be unavailable")
 
     yield
 
@@ -94,13 +119,11 @@ app = FastAPI(
 app.add_middleware(RequestLoggingMiddleware)
 
 # CORS 中间件：允许前端跨域访问
+# allow_origin_regex 覆盖 localhost 及所有 192.168.x.x 局域网地址
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-    ],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|26\.\d+\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -191,3 +214,23 @@ async def health_check():
         "database": "connected" if db_ok else "disconnected",
         "llm_model": settings.OPENAI_MODEL,
     }
+
+
+# =============================================================================
+# 本地文件访问（无需 MinIO）
+# =============================================================================
+@app.get("/api/v1/upload/files/{object_name:path}")
+async def serve_local_file(object_name: str):
+    """本地存储模式：直接提供已上传文件"""
+    from pathlib import Path as _Path
+    from app.core.exceptions import NotFoundException
+
+    file_path = (_Path(settings.UPLOAD_DIR) / object_name).resolve()
+    base_dir = _Path(settings.UPLOAD_DIR).resolve()
+
+    if not str(file_path).startswith(str(base_dir)):
+        raise FileValidationError("非法的文件路径")
+    if not file_path.exists():
+        raise NotFoundException("文件不存在", resource="文件", identifier=object_name)
+
+    return FileResponse(str(file_path))

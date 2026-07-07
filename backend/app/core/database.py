@@ -14,6 +14,7 @@ app/core/database.py — 数据库连接管理
   - Base     = 所有表的模板，每个具体表都继承它
 =============================================================================
 """
+from urllib.parse import urlparse
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -22,19 +23,35 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # =============================================================================
+# 根据数据库类型选择 connect_args（避免 SQLite 收到 PostgreSQL 专用参数）
+# =============================================================================
+_db_url = settings.DATABASE_URL
+_scheme = _db_url.split("://")[0].split("+")[0] if "://" in _db_url else "sqlite"
+
+if _scheme in ("postgresql", "postgres"):
+    _connect_args = {
+        "timeout": 5,
+        "command_timeout": 10,
+        "server_settings": {"application_name": "reimburse_agent"},
+    }
+    _pool_size = 2
+    _max_overflow = 5
+else:
+    # SQLite: check_same_thread=False 是异步访问所必需的
+    _connect_args = {"check_same_thread": False}
+    _pool_size = 1
+    _max_overflow = 3
+
+# =============================================================================
 # 1. 创建异步数据库引擎
 # =============================================================================
-# create_async_engine 创建一个能异步操作数据库的引擎对象
-#   - echo=DEBUG         : 调试模式下打印所有 SQL 语句（生产环境关掉）
-#   - pool_size=10       : 连接池中保持 10 个常备连接（应对并发请求）
-#   - max_overflow=20    : 最多额外创建 20 个临时连接（总共 30 个）
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,       # 使用前先测试连接是否存活
-    connect_args={"timeout": 10},
+    pool_size=_pool_size,
+    max_overflow=_max_overflow,
+    pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 # =============================================================================

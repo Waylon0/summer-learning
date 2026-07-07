@@ -118,13 +118,14 @@ def db_init():
     if r.returncode != 0:
         # Alembic 失败则直接 SQLAlchemy create_all
         code = (
-            "import asyncio;"
-            "from app.core.database import engine, Base;"
-            "async def _i():"
-            "  async with engine.begin() as c: await c.run_sync(Base.metadata.create_all);"
-            "  await engine.dispose();"
-            "asyncio.run(_i());"
-            "print('   ✅ 表已创建')"
+            "import asyncio\n"
+            "from app.core.database import engine, Base\n"
+            "async def _i():\n"
+            "    async with engine.begin() as c:\n"
+            "        await c.run_sync(Base.metadata.create_all)\n"
+            "    await engine.dispose()\n"
+            "asyncio.run(_i())\n"
+            "print('   ✅ 表已创建')\n"
         )
         _sh(["uv", "run", "python", "-c", code], cwd=BACKEND_DIR)
 

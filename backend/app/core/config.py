@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     DEBUG: bool = False                          # 调试模式开关
 
     # ===================== 数据库配置 =====================
-    DATABASE_URL: str = "postgresql+asyncpg://reimburse:reimburse123@26.116.234.123:5432/reimburse_db"
-    DATABASE_URL_SYNC: str = "postgresql://reimburse:reimburse123@26.116.234.123:5432/reimburse_db"
+    DATABASE_URL: str = "postgresql+asyncpg://reimburse:reimburse123@localhost:5432/reimburse_db"
+    DATABASE_URL_SYNC: str = "postgresql://reimburse:reimburse123@localhost:5432/reimburse_db"
 
     # ===================== Redis 配置 =====================
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "noreply@company.com"
 
-    # ===================== 其他配置 =====================
-    CHROMA_PERSIST_DIR: str = "./data/chroma"
+    # ===================== 存储配置 =====================
+    STORAGE_BACKEND: str = "local"  # local | minio
     UPLOAD_DIR: str = "./data/uploads"
     LOG_LEVEL: str = "INFO"
 
