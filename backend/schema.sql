@@ -27,10 +27,15 @@ CREATE TABLE IF NOT EXISTS invoices (
     reimbursement_id   VARCHAR(36) NOT NULL REFERENCES reimbursements(id),
     invoice_code       VARCHAR(32),
     invoice_number     VARCHAR(32),
-    amount             NUMERIC(12, 2) NOT NULL,
     invoice_date       DATE,
+    invoice_type       VARCHAR(32),
     seller_name        VARCHAR(128),
+    seller_tax_id      VARCHAR(32),
     buyer_name         VARCHAR(128),
+    buyer_tax_id       VARCHAR(32),
+    amount             NUMERIC(12, 2) NOT NULL,
+    tax_amount         NUMERIC(12, 2) DEFAULT 0,
+    total_with_tax     NUMERIC(12, 2),
     file_path          VARCHAR(256)
 );
 CREATE INDEX IF NOT EXISTS ix_invoices_reimbursement_id ON invoices (reimbursement_id);

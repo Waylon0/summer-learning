@@ -30,19 +30,52 @@ settings = get_settings()
 # =============================================================================
 # OCR 提示词
 # =============================================================================
-_INVOICE_OCR_PROMPT = """你是一个专业的发票识别助手。请从发票内容中提取以下字段，只返回 JSON：
+_INVOICE_OCR_PROMPT = """你是一个专业的中国增值税发票识别助手。请从发票内容中提取以下字段，只返回 JSON。
 
-{
-  "invoice_code": "发票代码（12位数字）",
-  "invoice_number": "发票号码（8位数字）",
-  "amount": 金额(数字),
-  "invoice_date": "开票日期（YYYY-MM-DD格式）",
-  "seller_name": "销售方名称",
-  "buyer_name": "购买方名称"
-}
+发票字段说明:
+  {
+    # --- 发票头部 ---
+    "invoice_code": "发票代码（12位数字，发票左上角）",
+    "invoice_number": "发票号码（8位数字，发票右上角）",
+    "invoice_date": "开票日期（YYYY-MM-DD格式）",
+    "invoice_type": "发票类型: 增值税普通发票/增值税专用发票/增值税电子普通发票/其他",
 
-如果某个字段无法识别，设为空字符串 ""。金额无法识别时设为 0。
+    # --- 购买方 ---
+    "buyer_name": "购买方名称（抬头）",
+    "buyer_tax_id": "购买方纳税人识别号（18位）",
+
+    # --- 销售方 ---
+    "seller_name": "销售方名称",
+    "seller_tax_id": "销售方纳税人识别号",
+
+    # --- 金额（三者关系: total_with_tax = amount + tax_amount）---
+    "amount": 合计金额(不含税数字),
+    "tax_amount": 税额(数字),
+    "total_with_tax": 价税合计(大写下方的小写数字),
+
+    # --- 货物或应税劳务清单 ---
+    "items": [
+      {
+        "name": "货物或应税劳务名称",
+        "specification": "规格型号（可能为空）",
+        "unit": "单位（个/台/套/张/次/项等）",
+        "quantity": 数量(数字),
+        "unit_price": 单价(数字),
+        "amount": 金额(数字 = 数量×单价),
+        "tax_rate": "税率（如 13%, 6%, 3%）"
+      }
+    ],
+
+    # --- 其他 ---
+    "remarks": "备注栏内容（可能为空）",
+    "payee": "收款人（发票底部）",
+    "reviewer": "复核人（发票底部）",
+    "drawer": "开票人（发票底部）"
+  }
+
+如果某个字段无法识别，字符串字段设为 ""，数字字段设为 0。
 只返回 JSON，不要输出任何其他内容。"""
+
 
 
 # =============================================================================
@@ -145,22 +178,51 @@ def _ocr_pdf(pdf_bytes: bytes, file_path: str) -> dict:
 
 
 def _parse_llm_invoice(raw: str, file_path: str) -> dict:
-    """解析 LLM 返回的 JSON 字符串"""
+    """解析 LLM 返回的 JSON 字符串为结构化发票数据"""
     content = raw.strip()
     if content.startswith("```"):
         content = content.split("\n", 1)[1].rsplit("```", 1)[0]
     try:
         data = json.loads(content)
+        items = data.get("items", [])
+        if isinstance(items, list):
+            for it in items:
+                it.setdefault("name", "")
+                it.setdefault("specification", "")
+                it.setdefault("unit", "")
+                it.setdefault("quantity", 0)
+                it.setdefault("unit_price", 0)
+                it.setdefault("amount", 0)
+                it.setdefault("tax_rate", "")
+
         result = {
+            # 头部
             "invoice_code": str(data.get("invoice_code", "")),
             "invoice_number": str(data.get("invoice_number", "")),
-            "amount": float(data.get("amount", 0) or 0),
             "invoice_date": str(data.get("invoice_date", "")),
-            "seller_name": str(data.get("seller_name", "")),
+            "invoice_type": str(data.get("invoice_type", "")),
+            # 双方
             "buyer_name": str(data.get("buyer_name", "")),
+            "buyer_tax_id": str(data.get("buyer_tax_id", "")),
+            "seller_name": str(data.get("seller_name", "")),
+            "seller_tax_id": str(data.get("seller_tax_id", "")),
+            # 金额
+            "amount": float(data.get("amount") or data.get("total_with_tax") or 0),
+            "tax_amount": float(data.get("tax_amount") or 0),
+            "total_with_tax": float(data.get("total_with_tax") or data.get("amount") or 0),
+            # 明细
+            "items": items,
+            # 其他
+            "remarks": str(data.get("remarks", "")),
+            "payee": str(data.get("payee", "")),
+            "reviewer": str(data.get("reviewer", "")),
+            "drawer": str(data.get("drawer", "")),
             "file_path": file_path,
         }
-        logger.info(f"OCR result: amount={result['amount']} seller={result['seller_name']}")
+        logger.info(
+            f"OCR result: amount={result['amount']} seller={result['seller_name']} "
+            f"items={len(result['items'])} tax=¥{result['tax_amount']}"
+        )
         return result
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         logger.warning(f"Failed to parse LLM invoice JSON: {e}")
@@ -169,9 +231,12 @@ def _parse_llm_invoice(raw: str, file_path: str) -> dict:
 
 def _empty_invoice_result(file_path: str) -> dict:
     return {
-        "invoice_code": "", "invoice_number": "",
-        "amount": 0, "invoice_date": "",
-        "seller_name": "", "buyer_name": "",
+        "invoice_code": "", "invoice_number": "", "invoice_date": "", "invoice_type": "",
+        "buyer_name": "", "buyer_tax_id": "",
+        "seller_name": "", "seller_tax_id": "",
+        "amount": 0, "tax_amount": 0, "total_with_tax": 0,
+        "items": [],
+        "remarks": "", "payee": "", "reviewer": "", "drawer": "",
         "file_path": file_path,
     }
 
@@ -446,9 +511,9 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
 
     # 表头
     tbl_left = col1_x
-    tbl_cols = [tbl_left, tbl_left + 30 * mm, tbl_left + 62 * mm, tbl_left + 90 * mm, tbl_left + 115 * mm]
-    tbl_widths = [30 * mm, 32 * mm, 28 * mm, 25 * mm, 25 * mm]
-    headers = ["发票代码", "发票号码", "开票日期", "金额", "销售方"]
+    tbl_cols = [tbl_left, tbl_left + 24 * mm, tbl_left + 48 * mm, tbl_left + 66 * mm, tbl_left + 84 * mm, tbl_left + 106 * mm]
+    tbl_widths = [24 * mm, 24 * mm, 18 * mm, 18 * mm, 22 * mm, 30 * mm]
+    headers = ["发票代码", "发票号码", "开票日期", "金额(不含税)", "税额", "销售方"]
     tbl_row_h = 7 * mm
 
     c.setFont(body_font, 9)
@@ -468,11 +533,12 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
         c.rect(tbl_left, y - tbl_row_h, sum(tbl_widths), tbl_row_h, fill=1, stroke=1)
         c.setFillColorRGB(0, 0, 0)
         vals = [
-            str(inv.get("invoice_code", ""))[:16],
-            str(inv.get("invoice_number", ""))[:16],
+            str(inv.get("invoice_code", ""))[:12],
+            str(inv.get("invoice_number", ""))[:8],
             str(inv.get("invoice_date", ""))[:10],
             f"¥{float(inv.get('amount', 0) or 0):,.2f}",
-            str(inv.get("seller_name", ""))[:8],
+            f"¥{float(inv.get('tax_amount', 0) or 0):,.2f}",
+            str(inv.get("seller_name", ""))[:10],
         ]
         for v, cx in zip(vals, tbl_cols):
             c.drawString(cx + 1 * mm, y - tbl_row_h + 2 * mm, v)
@@ -627,17 +693,26 @@ async def save_reimbursement_to_db(
                 await conn.execute(text("""
                     INSERT INTO invoices
                     (id, reimbursement_id, invoice_code, invoice_number, amount,
-                     invoice_date, seller_name, buyer_name, file_path)
+                     invoice_date, invoice_type,
+                     seller_name, seller_tax_id, buyer_name, buyer_tax_id,
+                     tax_amount, total_with_tax, file_path)
                     VALUES (:id, :rid, :code, :num, :amount,
-                            :date, :seller, :buyer, :fpath)
+                            :date, :itype,
+                            :seller, :stax, :buyer, :btax,
+                            :tax, :total, :fpath)
                 """), {
                     "id": uuid.uuid4().hex[:12], "rid": reimb_id,
                     "code": inv.get("invoice_code") or "",
                     "num": inv.get("invoice_number") or "",
                     "amount": inv_amount,
                     "date": inv.get("invoice_date") or None,
+                    "itype": inv.get("invoice_type") or "",
                     "seller": inv.get("seller_name") or "",
+                    "stax": inv.get("seller_tax_id") or "",
                     "buyer": inv.get("buyer_name") or "",
+                    "btax": inv.get("buyer_tax_id") or "",
+                    "tax": float(inv.get("tax_amount", 0) or 0),
+                    "total": float(inv.get("total_with_tax", inv_amount) or inv_amount),
                     "fpath": inv.get("file_path") or "",
                 })
 

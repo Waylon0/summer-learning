@@ -105,18 +105,26 @@ class Invoice(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     reimbursement_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("reimbursements.id"),  # 外键：指向报销单的 id
-        nullable=False, index=True                     # 加索引加快关联查询
+        String(36), ForeignKey("reimbursements.id"),
+        nullable=False, index=True
     )
-    invoice_code: Mapped[str] = mapped_column(String(32), nullable=True)      # 发票代码
-    invoice_number: Mapped[str] = mapped_column(String(32), nullable=True)    # 发票号码
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)   # 发票金额
-    invoice_date: Mapped[date] = mapped_column(Date, nullable=True)            # 开票日期
-    seller_name: Mapped[str] = mapped_column(String(128), nullable=True)      # 销售方名称
-    buyer_name: Mapped[str] = mapped_column(String(128), nullable=True)       # 购买方名称
-    file_path: Mapped[str] = mapped_column(String(256), nullable=True)         # MinIO 存储路径
+    # 发票头部
+    invoice_code: Mapped[str] = mapped_column(String(32), nullable=True)
+    invoice_number: Mapped[str] = mapped_column(String(32), nullable=True)
+    invoice_date: Mapped[date] = mapped_column(Date, nullable=True)
+    invoice_type: Mapped[str] = mapped_column(String(32), nullable=True)
+    # 交易双方
+    seller_name: Mapped[str] = mapped_column(String(128), nullable=True)
+    seller_tax_id: Mapped[str] = mapped_column(String(32), nullable=True)
+    buyer_name: Mapped[str] = mapped_column(String(128), nullable=True)
+    buyer_tax_id: Mapped[str] = mapped_column(String(32), nullable=True)
+    # 金额
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    tax_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True, default=0)
+    total_with_tax: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True)
+    # 文件
+    file_path: Mapped[str] = mapped_column(String(256), nullable=True)
 
-    # 关联：一张发票属于一个报销单
     reimbursement: Mapped["Reimbursement"] = relationship(back_populates="invoices")
 
     def to_dict(self):
@@ -125,10 +133,15 @@ class Invoice(Base):
             "reimbursement_id": self.reimbursement_id,
             "invoice_code": self.invoice_code,
             "invoice_number": self.invoice_number,
-            "amount": float(self.amount),
             "invoice_date": self.invoice_date.isoformat() if self.invoice_date else None,
+            "invoice_type": self.invoice_type,
             "seller_name": self.seller_name,
+            "seller_tax_id": self.seller_tax_id,
             "buyer_name": self.buyer_name,
+            "buyer_tax_id": self.buyer_tax_id,
+            "amount": float(self.amount),
+            "tax_amount": float(self.tax_amount) if self.tax_amount else 0,
+            "total_with_tax": float(self.total_with_tax) if self.total_with_tax else None,
             "file_path": self.file_path,
         }
 

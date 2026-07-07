@@ -550,12 +550,13 @@ async def ocr_invoice(state: ReimburseState) -> dict:
     if not attachments:
         logger.info("🔍 No attachments — using user-provided amount")
         invoices = [{
-            "invoice_code": "",
-            "invoice_number": "",
-            "amount": state.get("total_amount", 0),
-            "invoice_date": "",
-            "seller_name": "",
-            "buyer_name": "",
+            "invoice_code": "", "invoice_number": "", "invoice_date": "", "invoice_type": "",
+            "buyer_name": "中国石油华东分公司", "buyer_tax_id": "91310000710913000J",
+            "seller_name": "", "seller_tax_id": "",
+            "amount": state.get("total_amount") or 0, "tax_amount": 0,
+            "total_with_tax": state.get("total_amount") or 0,
+            "items": [],
+            "remarks": "", "payee": "", "reviewer": "", "drawer": "",
         }]
         return {
             "invoices": invoices,
@@ -577,9 +578,13 @@ async def ocr_invoice(state: ReimburseState) -> dict:
 
     if not invoices:
         invoices = [{
-            "invoice_code": "", "invoice_number": "",
-            "amount": state.get("total_amount", 0),
-            "invoice_date": "", "seller_name": "", "buyer_name": "",
+            "invoice_code": "", "invoice_number": "", "invoice_date": "", "invoice_type": "",
+            "buyer_name": "中国石油华东分公司", "buyer_tax_id": "91310000710913000J",
+            "seller_name": "", "seller_tax_id": "",
+            "amount": state.get("total_amount") or 0, "tax_amount": 0,
+            "total_with_tax": state.get("total_amount") or 0,
+            "items": [],
+            "remarks": "", "payee": "", "reviewer": "", "drawer": "",
         }]
     else:
         logger.info(f"OCR complete: {len(invoices)} invoice(s), total=¥{total_ocr:,.2f}")
