@@ -123,7 +123,7 @@ class IntentResult:
 # =============================================================================
 INTENT_SLOTS_MAP: dict[PrimaryIntent, list[str]] = {
     PrimaryIntent.REIMBURSEMENT_CREATE: ["department", "expense_type", "total_amount"],
-    PrimaryIntent.REIMBURSEMENT_QUERY: ["reimbursement_id"],  # 至少需要 ID 或日期范围
+    PrimaryIntent.REIMBURSEMENT_QUERY: [],  # 不再强制要求 reimb_id — 支持"列出所有"、"查询我的报销"等无 ID 查询
     PrimaryIntent.REIMBURSEMENT_MODIFY: ["reimbursement_id"],
     PrimaryIntent.POLICY_INQUIRY: [],
     PrimaryIntent.DOCUMENT_PARSE: ["file_path"],
@@ -193,6 +193,13 @@ _KEYWORD_INTENT_MAP = {
     "历史": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
     "汇总": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.AMOUNT_SUMMARY),
     "统计": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.AMOUNT_SUMMARY),
+    # 列表/全部查询（无 ID 的泛化查询）
+    "列出": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
+    "所有": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
+    "全部": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
+    "列表": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
+    "记录": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
+    "我的": (PrimaryIntent.REIMBURSEMENT_QUERY, SubIntent.HISTORY_LIST),
 
     # 修改报销
     "修改": (PrimaryIntent.REIMBURSEMENT_MODIFY, SubIntent.NONE),

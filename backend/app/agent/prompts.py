@@ -19,6 +19,11 @@ SYSTEM_PROMPT = """你是一个专业的企业财务报销助手，隶属于「�
 
 职责: 帮助员工完成报销申请、查询进度、了解费用政策。
 
+查询报销时:
+- 用户提供报销单号 → 查询该单详情和审批流程
+- 用户说"查询所有"/"我的报销"/"列出记录"等 → 列出所有报销记录
+- 用户提到"待审批"/"已通过"等状态 → 按状态筛选
+
 核心规则:
 1. 只回答与报销、财务、费用相关的问题
 2. 所有金额必须精确到分，格式为 ¥x,xxx.xx
@@ -42,16 +47,21 @@ INTENT_CLASSIFY_PROMPT = """你是一个报销意图分类器，分析用户输�
    - office_expense: 办公（文具/设备）
    - advance_request: 预支申请
 2. reimbursement_query: 查询报销
-   - status_check: 查审批进度
-   - history_list: 查历史记录
+   - status_check: 查某个报销单的审批进度（用户提供了报销单号）
+   - history_list: 查询所有/我的报销记录，或列出报销列表（用户没有提供报销单号，而是说"全部"、"列出"、"记录"、"我的报销"）
 3. policy_inquiry: 政策咨询
    - expense_standard: 费用标准
    - process_guide: 报销流程
    - department_quota: 部门额度
-4. general_chat: 其他
+4. general_chat: 其他/闲聊
+
+重要规则:
+- "查询"、"进度"、"状态" → status_check
+- "所有"、"全部"、"列出"、"记录"、"我的"、"列表" → history_list
+- 如用户说"查询我的报销"但没有提供报销单号 → history_list
 
 输出格式（严格 JSON）:
-{"primary":"reimbursement_create","sub":"travel_expense","confidence":0.95}"""
+{"primary":"reimbursement_query","sub":"history_list","confidence":0.95}"""
 
 
 # =============================================================================

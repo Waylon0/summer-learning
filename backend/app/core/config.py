@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     DEBUG: bool = False                          # 调试模式开关
 
     # ===================== 数据库配置 =====================
-    DATABASE_URL: str = "postgresql+asyncpg://reimburse:reimburse123@localhost:5432/reimburse_db"
-    DATABASE_URL_SYNC: str = "postgresql://reimburse:reimburse123@localhost:5432/reimburse_db"
+    DATABASE_URL: str = "postgresql+asyncpg://reimburse:reimburse123@26.116.234.123:5432/reimburse_db"
+    DATABASE_URL_SYNC: str = "postgresql://reimburse:reimburse123@26.116.234.123:5432/reimburse_db"
 
     # ===================== Redis 配置 =====================
     REDIS_URL: str = "redis://localhost:6379/0"

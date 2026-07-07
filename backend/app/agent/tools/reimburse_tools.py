@@ -636,6 +636,75 @@ async def query_reimbursement_status(
 
 
 # =============================================================================
+# 工具 8：查询报销列表（支持泛化查询 — 我的报销、全部、按状态筛选）
+# =============================================================================
+async def query_reimbursement_list(
+    status: str = "", limit: int = 50, user_id: str = ""
+) -> list[dict]:
+    """
+    查询报销单列表（支持无 reimb_id 的泛化查询）。
+
+    支持场景：
+      - "查询我的报销" / "列出所有报销" → 返回全部列表
+      - "待审批的有哪些" → 按 status 筛选
+      - "最近有哪些报销记录" → 返回最近 limit 条
+
+    Returns:
+        报销单摘要列表，每项含 id, user_name, department, expense_type,
+        total_amount, invoice_count, status, created_at
+    """
+    from sqlalchemy import text
+
+    try:
+        async with engine.connect() as conn:
+            where_clauses = []
+            params = {"limit": min(limit, 200)}  # 硬上限 200 条
+
+            if status:
+                where_clauses.append("r.status = :status")
+                params["status"] = status
+            if user_id:
+                where_clauses.append("r.user_id = :uid")
+                params["uid"] = user_id
+
+            where_sql = ""
+            if where_clauses:
+                where_sql = "WHERE " + " AND ".join(where_clauses)
+
+            query = f"""
+                SELECT r.id, r.user_name, r.department, r.expense_type,
+                       r.total_amount, r.invoice_count, r.status, r.created_at,
+                       r.need_special_approval, r.description
+                FROM reimbursements r
+                {where_sql}
+                ORDER BY r.created_at DESC
+                LIMIT :limit
+            """
+            result = await conn.execute(text(query), params)
+            rows = result.fetchall()
+
+            return [
+                {
+                    "id": row.id,
+                    "user_name": row.user_name,
+                    "department": row.department,
+                    "expense_type": row.expense_type,
+                    "total_amount": float(row.total_amount),
+                    "invoice_count": row.invoice_count,
+                    "status": row.status,
+                    "created_at": str(row.created_at) if row.created_at else "",
+                    "need_special_approval": bool(row.need_special_approval),
+                    "description": row.description or "",
+                }
+                for row in rows
+            ]
+    except Exception as e:
+        logger.warning(f"DB query failed for reimbursement list: {e}")
+
+    return []
+
+
+# =============================================================================
 # 工具集合：供外部引用
 # =============================================================================
 ALL_TOOLS = [
@@ -646,4 +715,5 @@ ALL_TOOLS = [
     send_approval_email,
     save_reimbursement_to_db,
     query_reimbursement_status,
+    query_reimbursement_list,
 ]

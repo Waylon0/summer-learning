@@ -41,6 +41,7 @@ from app.agent.tools import (
     generate_reimbursement_pdf,
     send_approval_email,
     query_reimbursement_status,
+    query_reimbursement_list,
     save_reimbursement_to_db,
 )
 from app.agent.intents import (
@@ -831,39 +832,84 @@ async def send_email(state: ReimburseState) -> dict:
 
 
 async def query_status(state: ReimburseState) -> dict:
-    """查询审批进度 — 从上下文/实体中提取报销单号"""
+    """查询审批进度 — 智能判断单条查询 vs 列表查询"""
     reimb_id = state.get("reimb_id", "")
     entities = state.get("entities", {})
+    sub_intent = state.get("sub_intent", "status_check")
+    messages_list = state.get("messages", [])
+    last_msg = messages_list[-1].content if messages_list else ""
+
     if not reimb_id and entities:
         reimb_id = entities.get("reimbursement_id", "")
     if not reimb_id:
-        messages_list = state.get("messages", [])
-        last_msg = messages_list[-1].content if messages_list else ""
         from app.agent.entities import _extract_uuid
         reimb_id = _extract_uuid(last_msg)
 
-    if not reimb_id:
+    # --- 路径 A：有具体报销单号 → 单条查询 ---
+    if reimb_id:
+        logger.info(f"Query single status for reimb_id={reimb_id}")
+        from app.agent.tools.reimburse_tools import query_reimbursement_status as _qstatus
+        result = await _qstatus(reimb_id=reimb_id)
+        steps = result.get("steps", [])
+        status_map = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
+        status_cn = status_map.get(result.get("status", "pending"), "未知")
+
+        if steps:
+            text = "\n".join(
+                f"  {s['step']}. {s['approver']} — {s['action']}"
+                for s in steps
+            )
+        else:
+            text = "  暂无审批记录"
+
         return {"messages": [AIMessage(
-            content="📋 请提供报销单号，例如：\"查询 a1b2c3d4 的进度\""
+            content=f"📋 报销单 {reimb_id}\n状态: {status_cn}\n审批流程:\n{text}"
         )]}
 
-    logger.info(f"Query status for reimb_id={reimb_id}")
-    result = await query_reimbursement_status(reimb_id=reimb_id)
-    steps = result.get("steps", [])
-    status_map = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
-    status_cn = status_map.get(result.get("status", "pending"), "未知")
+    # --- 路径 B：无报销单号 → 列表查询（泛化查询）---
+    logger.info(f"No reimb_id provided, falling back to list query (sub_intent={sub_intent})")
 
-    if steps:
-        text = "\n".join(
-            f"  {s['step']}. {s['approver']} — {s['action']}"
-            for s in steps
+    # 从用户消息中识别是否在筛选特定状态
+    status_filter = ""
+    status_keywords = {
+        "待审批": "pending", "待审": "pending",
+        "已通过": "approved", "通过": "approved",
+        "已驳回": "rejected", "驳回": "rejected",
+        "已退回": "returned", "退回": "returned",
+        "已付款": "paid", "已付": "paid", "付款": "paid",
+    }
+    for kw, val in status_keywords.items():
+        if kw in last_msg:
+            status_filter = val
+            break
+
+    from app.agent.tools.reimburse_tools import query_reimbursement_list as _qlist
+    records = await _qlist(status=status_filter, limit=30)
+
+    if not records:
+        return {"messages": [AIMessage(
+            content='📋 暂无报销记录。\n\n你可以说 "我要报销差旅费 1500 元，部门技术部" 来创建你的第一条报销申请！'
+        )]}
+
+    # 格式化列表响应
+    status_labels = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
+    type_labels = {"travel": "差旅", "entertainment": "招待", "office": "办公", "other": "其他"}
+
+    lines = [f"📋 共找到 {len(records)} 条报销记录："]
+    for i, r in enumerate(records, 1):
+        sid = r["id"][:10]
+        status_cn = status_labels.get(r["status"], r["status"])
+        type_cn = type_labels.get(r["expense_type"], r["expense_type"])
+        amount = f"¥{r['total_amount']:,.2f}"
+        extra = ""
+        if r.get("need_special_approval"):
+            extra = " ⚠️需特殊审批"
+        lines.append(
+            f"  {i}. [{sid}...] {r['user_name']} · {r['department']} · {type_cn} {amount} — {status_cn}{extra}"
         )
-    else:
-        text = "  暂无审批记录"
+    lines.append(f"\n💡 输入具体报销单号的后几位可查看详情，例如：\"查询 {records[0]['id'][:8]}\"")
 
-    return {"messages": [AIMessage(
-        content=f"📋 报销单 {reimb_id}\n状态: {status_cn}\n审批流程:\n{text}"
-    )]}
+    return {"messages": [AIMessage(content="\n".join(lines))]}
 
 
 def approval_process(state: ReimburseState) -> dict:
@@ -964,7 +1010,8 @@ async def general_response(state: ReimburseState) -> dict:
     return {"messages": [AIMessage(
         content=f"你好！我是财务报销助手。\n\n"
                 f"• 新建报销：\"我要报销差旅费 1500 元，部门技术部\"\n"
-                f"• 查询进度：\"查询我的报销进度\"\n"
+                f"• 查询所有：\"列出我的报销记录\" / \"有哪些待审批的？\"\n"
+                f"• 查询进度：\"查询 a1b2c3d4 的审批进度\"\n"
                 f"• 政策咨询：\"差旅费标准是多少？\"\n"
                 f"• 上传票据：直接上传发票文件即可识别"
     )]}
