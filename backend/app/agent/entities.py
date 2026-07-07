@@ -146,9 +146,9 @@ EXPENSE_TYPE_MAP = {
     "培训": "training", "课程": "training", "学习": "training",
     "培训费": "training", "training": "training", "教材": "training",
     # 研发专属
-    "研发材料": "rd_materials", "研发设备": "rd_equipment",
+    "研发材料": "rd_materials", "研发费用": "rd_materials", "研发设备": "rd_equipment",
     "技术资料": "rd_materials", "实验": "rd_materials",
-    "样机": "rd_materials", "原型": "rd_materials",
+    "样机": "rd_materials", "原型": "rd_materials", "研发": "rd_materials",
     # 技术专属
     "技术引进": "tech_acquisition", "软件许可": "software_license",
     "license": "software_license", "授权": "software_license", "SaaS": "software_license",

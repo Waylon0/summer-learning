@@ -481,7 +481,7 @@ async def send_approval_email(to_email: str, reimb_id: str, total_amount: float,
     sent = False
     # 优先用 Celery 异步
     try:
-        from app.tasks.email_task import send_approval_email_task
+        from tasks.email_task import send_approval_email_task
         send_approval_email_task.delay(to_email, reimb_id, total_amount, pdf_path)
         sent = True
         logger.info("Email queued via Celery")

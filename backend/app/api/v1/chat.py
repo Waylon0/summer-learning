@@ -253,8 +253,7 @@ async def _chat_stream(request: ChatRequest):
                                         "content": content,
                                         "node": node_name,
                                     })
-
-                    final_state.update(node_output)
+                        final_state.update(node_output)
 
             reply = _collect_reply(final_state)
             _save_context(session_id, final_state, request.message, reply)
@@ -281,10 +280,22 @@ async def _chat_stream(request: ChatRequest):
             })
 
         except Exception as e:
-            logger.error(f"Agent execution failed: {e}", exc_info=True)
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"Agent execution failed: {e}\n{tb}")
+            # Send descriptive error to frontend
             yield _sse_event("error", {
                 "error_code": "AGENT_ERROR",
                 "message": str(e),
+                "type": type(e).__name__,
+                "suggestion": "请稍后重试，或提供更完整的信息（部门、金额、费用类型）。",
+            })
+            # Also send done event so frontend stream ends cleanly
+            elapsed = (time.perf_counter() - t_start) * 1000
+            yield _sse_event("done", {
+                "session_id": session_id,
+                "elapsed_ms": round(elapsed, 0),
+                "error": str(e),
             })
 
     return StreamingResponse(

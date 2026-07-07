@@ -546,7 +546,7 @@ def route_after_validation(state: ReimburseState) -> Literal["ocr_invoice", "slo
 # =============================================================================
 async def ocr_invoice(state: ReimburseState) -> dict:
     """OCR 识别上传的发票文件，支持多张发票分别识别并汇总金额"""
-    attachments = state.get("attachments", [])
+    attachments = state.get("attachments") or []
     if not attachments:
         logger.info("🔍 No attachments — using user-provided amount")
         invoices = [{
@@ -599,14 +599,12 @@ async def ocr_invoice(state: ReimburseState) -> dict:
 def policy_check(state: ReimburseState) -> dict:
     """
     专业政策校验 —— 调用 PolicyEngine 多级检查。
-
-    返回违反的规则列表 + 要求的动作。
     """
-    expense_type = state.get("expense_type", "other")
-    total = state.get("total_amount", 0)
-    department = state.get("department", "")
-    entities_data = state.get("entities", {})
-    guest_count = entities_data.get("guest_count", 0) if entities_data else 0
+    expense_type = state.get("expense_type") or "other"
+    total = state.get("total_amount") or 0
+    department = state.get("department") or ""
+    entities_data = state.get("entities") or {}
+    guest_count = (entities_data or {}).get("guest_count", 0)
 
     from app.agent.validators import policy_validate
     result = policy_validate(
@@ -634,8 +632,8 @@ def policy_check(state: ReimburseState) -> dict:
 # =============================================================================
 async def budget_control(state: ReimburseState) -> dict:
     """查询部门预算，判断是否超标"""
-    department = state.get("department", "")
-    total = state.get("total_amount", 0)
+    department = state.get("department") or ""
+    total = state.get("total_amount") or 0
     result = await budget_check(department=department, amount=total)
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
@@ -651,7 +649,7 @@ def route_after_budget(state: ReimburseState) -> Literal["save_to_db", "rejectio
       - 硬拒绝 → rejection_response（不保存）
       - 超标/正常 → save_to_db（先入库再继续）
     """
-    compliance = state.get("compliance_result", {})
+    compliance = state.get("compliance_result") or {}
     if compliance and compliance.get("passed") is False:
         return "rejection_response"
     return "save_to_db"
@@ -667,14 +665,14 @@ async def save_to_db(state: ReimburseState) -> dict:
     这个节点是整个流程的关键：之前的意图识别/实体提取/政策检查/预算控制
     都在"内存"中运行，只有这里才真正持久化数据。
     """
-    department = state.get("department", "")
-    expense_type = state.get("expense_type", "")
-    total_amount = state.get("total_amount", 0)
-    invoices = state.get("invoices", [])
-    need_special = state.get("need_special_approval", False)
-    budget_result = state.get("budget_result", {})
-    budget_remaining = budget_result.get("after_reimbursement", 0)
-    description = state.get("description", "")
+    department = state.get("department") or ""
+    expense_type = state.get("expense_type") or ""
+    total_amount = state.get("total_amount") or 0
+    invoices = state.get("invoices") or []
+    need_special = state.get("need_special_approval") or False
+    budget_result = state.get("budget_result") or {}
+    budget_remaining = (budget_result or {}).get("after_reimbursement", 0)
+    description = state.get("description") or ""
 
     logger.info(
         f"Saving to DB: dept={department} type={expense_type} "
@@ -780,7 +778,7 @@ def special_approval(state: ReimburseState) -> dict:
 def rejection_response(state: ReimburseState) -> dict:
     """硬拒绝响应 —— 违反 Level 1 规则时"""
     from app.core.exceptions import ComplianceViolationError
-    compliance = state.get("compliance_result", {})
+    compliance = state.get("compliance_result") or {}
     errors = compliance.get("errors", ["违反公司费用政策"]) if compliance else ["校验未通过"]
     reasons = "\n".join(f"• {e}" for e in errors)
     total = state.get("total_amount", 0)
@@ -797,7 +795,7 @@ async def generate_pdf(state: ReimburseState) -> dict:
     """生成 PDF 报销单（CPU 密集型任务放线程池，不阻塞事件循环）"""
     import asyncio
     total = state.get("total_amount", 0)
-    invoices = state.get("invoices", [])
+    invoices = state.get("invoices") or []
 
     path = await asyncio.to_thread(
         generate_reimbursement_pdf,
@@ -952,7 +950,7 @@ async def modify_reimbursement(state: ReimburseState) -> dict:
     仅允许撤回 status=pending 的报销单；
     已审批/已付款的报销单无法撤回。
     """
-    entities = state.get("entities", {})
+    entities = state.get("entities") or {}
     reimb_id = state.get("reimb_id", entities.get("reimbursement_id", ""))
     if not reimb_id:
         messages_list = state.get("messages", [])
