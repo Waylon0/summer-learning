@@ -44,10 +44,13 @@ export interface ChatResponse {
 // ---------- SSE 事件 ----------
 
 export interface SSEEvent {
-  type: 'intent' | 'message' | 'done' | 'error';
+  type: 'start' | 'step' | 'intent' | 'message' | 'result' | 'done' | 'error';
   content?: string;
   session_id?: string;
   intent?: string;
+  node?: string;
+  timestamp?: string;
+  elapsed_ms?: number;
 }
 
 // ---------- 报销单 ----------

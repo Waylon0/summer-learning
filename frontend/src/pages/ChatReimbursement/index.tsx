@@ -1,22 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
 import {
-  Card, Input, Button, Space, Upload, Tag, message, Spin, Switch,
+  Card, Input, Button, Space, Upload, Tag, message, Switch,
 } from 'antd';
 import {
   SendOutlined, UploadOutlined, FileTextOutlined, LoadingOutlined,
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import { useAppStore } from '@/stores';
-import { sendChatMessageStream } from '@/services/api';
-import type { ChatMessage } from '@/types';
+import { sendChatMessage, sendChatMessageStream, uploadInvoice } from '@/services/api';
+import type { ChatMessage, SSEEvent } from '@/types';
 
 export default function ChatReimbursement() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [streamMode, setStreamMode] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { messages, addMessage, updateLastMessage, sessionId, setSessionId, clearMessages } = useAppStore();
+  const { messages, addMessage, appendToLastAssistant, sessionId, setSessionId, clearMessages } = useAppStore();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -25,74 +26,72 @@ export default function ChatReimbursement() {
   const handleSend = async () => {
     if (!input.trim() && fileList.length === 0) return;
 
+    const userContent = input || '请识别上传的票据';
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      content: input || '请识别上传的票据',
+      content: userContent,
       timestamp: new Date().toISOString(),
     };
     addMessage(userMsg);
     setInput('');
     setLoading(true);
 
-    const assistantId = (Date.now() + 1).toString();
-    const assistantMsg: ChatMessage = {
-      id: assistantId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date().toISOString(),
-    };
-    addMessage(assistantMsg);
-
     try {
-      const attachments: string[] = [];
-      for (const f of fileList) {
-        if (f.originFileObj) {
-          const form = new FormData();
-          form.append('file', f.originFileObj);
-          const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/upload`, {
-            method: 'POST', body: form,
-          });
-          if (res.ok) {
-            const data = await res.json();
-            attachments.push(data.object_name);
+      const attachments = await Promise.all(
+        fileList
+          .filter((f) => f.originFileObj)
+          .map((f) => uploadInvoice(f.originFileObj!)),
+      ).then((results) => results.map((r) => r.object_name));
+
+      if (streamMode) {
+        setStreaming(true);
+        for await (const event of sendChatMessageStream({
+          message: userContent,
+          session_id: sessionId || undefined,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        })) {
+          switch (event.type) {
+            case 'start':
+              if (event.session_id) setSessionId(event.session_id);
+              break;
+            case 'intent':
+              if (event.session_id) setSessionId(event.session_id);
+              break;
+            case 'message':
+              appendToLastAssistant(event.content || '');
+              break;
+            case 'done':
+              if (event.session_id) setSessionId(event.session_id);
+              break;
+            case 'error':
+              message.error(event.content || '处理异常');
+              break;
           }
         }
-      }
-
-      // SSE 流式接收
-      for await (const event of sendChatMessageStream({
-        message: userMsg.content,
-        session_id: sessionId || undefined,
-        attachments: attachments.length > 0 ? attachments : undefined,
-      })) {
-        switch (event.type) {
-          case 'start':
-            setSessionId(event.session_id || '');
-            break;
-          case 'step':
-            break;
-          case 'token':
-            // 逐字符追加，实现打字机效果
-            assistantMsg.content += event.content || '';
-            updateLastMessage(assistantMsg);
-            break;
-          case 'intent':
-          case 'result':
-            break;
-          case 'done':
-            setSessionId(event.session_id || '');
-            break;
-          case 'error':
-            message.error(event.message || '处理异常');
-            break;
-        }
+      } else {
+        const data = await sendChatMessage({
+          message: userContent,
+          session_id: sessionId || undefined,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        });
+        if (data.session_id) setSessionId(data.session_id);
+        addMessage({
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: data.reply,
+          timestamp: new Date().toISOString(),
+          intent: data.intent,
+          entities: data.entities,
+        });
       }
       setFileList([]);
     } catch (e) {
-      message.error('请求失败，请检查后端服务是否启动');
+      const msg = e instanceof Error ? e.message : '请求失败，请检查后端服务是否启动';
+      message.error(msg);
     } finally {
       setLoading(false);
+      setStreaming(false);
     }
   };
 
@@ -101,10 +100,8 @@ export default function ChatReimbursement() {
       title="智能报销对话"
       extra={
         <Space>
-          <Switch
-            size="small" checked={streamMode} onChange={setStreamMode}
-            checkedChildren="SSE" unCheckedChildren="SSE"
-          />
+          <span style={{ fontSize: 12, color: '#999' }}>SSE流式</span>
+          <Switch size="small" checked={streamMode} onChange={setStreamMode} />
           <Button size="small" onClick={clearMessages}>清空对话</Button>
         </Space>
       }
@@ -126,13 +123,14 @@ export default function ChatReimbursement() {
               textAlign: 'left', whiteSpace: 'pre-wrap',
             }}>
               {msg.content}
-              {loading && msg.role === 'assistant' && idx === messages.length - 1 && (
+              {streaming && msg.role === 'assistant' && idx === messages.length - 1 && (
                 <LoadingOutlined style={{ marginLeft: 8 }} spin />
               )}
             </div>
-            {msg.entities && msg.role === 'assistant' && (
+            {(msg.intent || msg.entities) && msg.role === 'assistant' && (
               <div style={{ marginTop: 4 }}>
-                {Object.entries(msg.entities).map(([k, v]) => (
+                {msg.intent && <Tag color="blue">意图: {msg.intent}</Tag>}
+                {msg.entities && Object.entries(msg.entities).map(([k, v]) => (
                   <Tag key={k} style={{ marginBottom: 4 }}>{k}: {String(v)}</Tag>
                 ))}
               </div>

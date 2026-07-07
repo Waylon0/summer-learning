@@ -47,16 +47,18 @@ export async function healthCheck(): Promise<HealthStatus> {
 // ========== Agent 对话 ==========
 
 export async function sendChatMessage(data: ChatRequest): Promise<ChatResponse> {
-  // 流式模式下改用 SSE，此函数保留兼容
-  const res = await api.post<ChatResponse>('/chat', data, {
-    headers: { 'Accept': 'application/json' },
-    responseType: 'json',
-  });
+  const res = await api.post<ChatResponse>('/chat', data);
   return res.data;
 }
 
 /**
  * SSE 流式对话 —— 通过 fetch + ReadableStream 接收事件
+ *
+ * SSE 事件类型（对齐 API 文档）：
+ *   intent  - 意图识别结果  { type, intent, session_id }
+ *   message - 中间消息      { type, content }
+ *   done    - 处理完成      { type, session_id }
+ *   error   - 异常          { type, content }
  *
  * 用法:
  *   for await (const event of sendChatMessageStream({ message: "你好" })) {
@@ -64,7 +66,7 @@ export async function sendChatMessage(data: ChatRequest): Promise<ChatResponse> 
  *   }
  */
 export async function* sendChatMessageStream(data: ChatRequest) {
-  const response = await fetch(`${API_BASE}/chat`, {
+  const response = await fetch(`${API_BASE}/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
