@@ -52,6 +52,7 @@ class PrimaryIntent(str, Enum):
     REIMBURSEMENT_MODIFY = "reimbursement_modify"  # 修改报销
     POLICY_INQUIRY = "policy_inquiry"              # 政策咨询
     DOCUMENT_PARSE = "document_parse"               # 票据识别
+    INVOICE_GENERATE = "invoice_generate"           # 生成票据/发票 PDF
     APPROVAL_ACTION = "approval_action"             # 审批操作
     GENERAL_CHAT = "general_chat"                   # 闲聊/其他
 
@@ -127,6 +128,7 @@ INTENT_SLOTS_MAP: dict[PrimaryIntent, list[str]] = {
     PrimaryIntent.REIMBURSEMENT_MODIFY: ["reimbursement_id"],
     PrimaryIntent.POLICY_INQUIRY: [],
     PrimaryIntent.DOCUMENT_PARSE: ["file_path"],
+    PrimaryIntent.INVOICE_GENERATE: [],  # 无强制槽位：金额缺省时可从上下文/报销单获取
     PrimaryIntent.APPROVAL_ACTION: ["reimbursement_id", "action"],
     PrimaryIntent.GENERAL_CHAT: [],
 }
@@ -160,6 +162,7 @@ INTENT_ROUTING_MAP: dict[PrimaryIntent, str] = {
     PrimaryIntent.REIMBURSEMENT_MODIFY: "modify_reimbursement",
     PrimaryIntent.POLICY_INQUIRY: "policy_lookup",
     PrimaryIntent.DOCUMENT_PARSE: "entity_extraction",
+    PrimaryIntent.INVOICE_GENERATE: "generate_invoice",
     PrimaryIntent.APPROVAL_ACTION: "approval_process",
     PrimaryIntent.GENERAL_CHAT: "general_response",
 }
@@ -168,7 +171,10 @@ INTENT_ROUTING_MAP: dict[PrimaryIntent, str] = {
 # =============================================================================
 # 关键词 → 意图快速匹配表
 # =============================================================================
-_KEYWORD_INTENT_MAP = {
+# 说明: 本表现由 app/agent/intent_registry.py 的注册表「自动生成」，
+#       不再手工维护。新增意图/关键词请改注册表，避免多处硬编码漂移。
+#       下方 _LEGACY_KEYWORD_INTENT_MAP 仅作历史保留（未使用）。
+_LEGACY_KEYWORD_INTENT_MAP = {
     # 新建报销
     "报销": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
     "申请": (PrimaryIntent.REIMBURSEMENT_CREATE, SubIntent.NONE),
@@ -243,57 +249,88 @@ _KEYWORD_INTENT_MAP = {
     "批准": (PrimaryIntent.APPROVAL_ACTION, SubIntent.NONE),
     "拒绝": (PrimaryIntent.APPROVAL_ACTION, SubIntent.NONE),
 
-    # 票据
+    # 票据识别（上传已有票据 → OCR）
     "发票": (PrimaryIntent.DOCUMENT_PARSE, SubIntent.NONE),
     "上传": (PrimaryIntent.DOCUMENT_PARSE, SubIntent.NONE),
     "票据": (PrimaryIntent.DOCUMENT_PARSE, SubIntent.NONE),
+
+    # 票据生成（开具/生成新的发票 PDF）
+    "生成票据": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "生成发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "生成pdf票据": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "开具发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "开发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "开票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "制作发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "生成一张发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
 }
+
+
+def _fill_result(result: IntentResult) -> IntentResult:
+    """补全 required_slots 与 routing_hint。"""
+    slots = INTENT_SLOTS_MAP.get(result.primary, [])
+    sub_slots = SUB_INTENT_SLOTS_MAP.get(result.sub, [])
+    result.required_slots = slots + sub_slots
+    result.routing_hint = INTENT_ROUTING_MAP.get(result.primary, "general_response")
+    return result
 
 
 def classify_by_keywords(text: str) -> IntentResult:
     """
-    基于关键词的快速意图分类。
+    基于注册表的关键词打分分类（规则层）。
 
-    优先级规则（高→低）:
-      1. 精确子意图关键词匹配（如 "差旅费" → travel_expense）
-      2. 泛化一级意图匹配（如 "报销" → reimbursement_create）
-      3. 兜底 → general_chat
+    评分规则（高→低）:
+      1. priority_keywords 命中（复合短语，如"差旅费""生成发票"）→ 权重 10 + 词长
+      2. keywords 命中（普通词，如"报销""办公"）→ 权重 3 + 词长
+      3. 取总分最高的（子）意图；平局时优先「有子意图」的更具体项
+      4. 无任何命中 → general_chat
+
+    关键词/例句全部来自 intent_registry.INTENT_SPECS（单一事实来源），
+    避免多处硬编码。
     """
+    from app.agent.intent_registry import INTENT_SPECS
+
     text_lower = text.lower()
-    best_match: IntentResult | None = None
+    best_spec = None
+    best_score = 0.0
 
-    for keyword, (primary, sub) in _KEYWORD_INTENT_MAP.items():
-        if keyword in text_lower:
-            # 优先级：子意图 > 无子意图
-            if best_match is None or sub != SubIntent.NONE:
-                best_match = IntentResult(
-                    primary=primary,
-                    sub=sub if sub != SubIntent.NONE else SubIntent.NONE,
-                    confidence=0.95 if sub != SubIntent.NONE else 0.85,
-                    source="rule",
-                )
-            # 找到精确子意图就不继续了
-            if best_match.sub != SubIntent.NONE and keyword in ["差旅", "出差", "招待", "宴请", "办公", "采购", "预支", "借款"]:
-                break
-
-    if best_match is None:
-        # 没有任何关键词匹配 → 一般对话
-        best_match = IntentResult(
-            primary=PrimaryIntent.GENERAL_CHAT,
-            sub=SubIntent.NONE,
-            confidence=0.7,
-            source="rule",
+    for spec in INTENT_SPECS:
+        score = 0.0
+        # 优先短语：只计「最长命中」的一个，避免"差旅费"与"差旅"重复累加
+        p_hits = [kw for kw in spec.priority_keywords if kw.lower() in text_lower]
+        if p_hits:
+            longest = max(p_hits, key=len)
+            score += 10 + len(longest)
+        # 普通关键词：同样只计最长命中一个
+        k_hits = [kw for kw in spec.keywords if kw.lower() in text_lower]
+        if k_hits:
+            longest_k = max(k_hits, key=len)
+            score += 3 + len(longest_k)
+        if score <= 0:
+            continue
+        # 平局时：更具体的子意图（sub != NONE）优先
+        more_specific = (
+            best_spec is not None
+            and score == best_score
+            and spec.sub != SubIntent.NONE
+            and best_spec.sub == SubIntent.NONE
         )
+        if score > best_score or more_specific:
+            best_score = score
+            best_spec = spec
 
-    # 设置必需的实体槽位
-    slots = INTENT_SLOTS_MAP.get(best_match.primary, [])
-    sub_slots = SUB_INTENT_SLOTS_MAP.get(best_match.sub, [])
-    best_match.required_slots = slots + sub_slots
+    if best_spec is None:
+        return _fill_result(IntentResult(
+            primary=PrimaryIntent.GENERAL_CHAT, sub=SubIntent.NONE,
+            confidence=0.5, source="rule",
+        ))
 
-    # 设置路由提示
-    best_match.routing_hint = INTENT_ROUTING_MAP.get(best_match.primary, "general_response")
-
-    return best_match
+    # 置信度：命中复合短语给高分，仅普通词给中分
+    confidence = 0.9 if best_score >= 10 else 0.8
+    return _fill_result(IntentResult(
+        primary=best_spec.primary, sub=best_spec.sub,
+        confidence=confidence, source="rule",
+    ))
 
 
 def merge_with_llm(rule_result: IntentResult, llm_result: dict | None) -> IntentResult:
@@ -329,3 +366,96 @@ def merge_with_llm(rule_result: IntentResult, llm_result: dict | None) -> Intent
         routing_hint=INTENT_ROUTING_MAP.get(primary, "general_response"),
         source="hybrid" if primary != rule_result.primary else "rule",
     )
+
+
+def _result_from(primary: PrimaryIntent, sub: SubIntent, confidence: float, source: str) -> IntentResult:
+    return _fill_result(IntentResult(
+        primary=primary, sub=sub, confidence=confidence, source=source,
+    ))
+
+
+def fuse_intents(
+    rule: IntentResult,
+    semantic=None,           # semantic_router.RouteResult | None
+    llm: dict | None = None,
+    semantic_threshold: float = 0.72,
+    semantic_margin: float = 0.06,
+    llm_trust: float = 0.75,
+) -> IntentResult:
+    """
+    三层意图融合（规则 + 语义向量 + LLM），提升自然语言理解准确率。
+
+    决策优先级（综合置信度与一致性，而非简单谁覆盖谁）:
+      1. LLM 高置信（≥ llm_trust）且输出合法 → 直接采纳 LLM（最强语义引擎）。
+      2. LLM 与 语义路由「相互印证」（primary 一致）→ 采纳，置信度加成。
+      3. LLM 与 规则「相互印证」→ 采纳。
+      4. LLM 不可用时：语义路由分数高且区分度够（score≥阈值 且 margin 足）→ 采纳语义。
+      5. 都不满足 → 回退规则结果（保底，永不崩）。
+
+    这样：
+      - 有 LLM 时以 LLM 为主，但用 规则/语义 交叉校验，降低单点误判。
+      - 无 LLM（离线）时，语义路由兜底，仍优于纯关键词。
+    """
+    # 解析 LLM 输出为合法枚举
+    llm_primary = llm_sub = None
+    llm_conf = 0.0
+    if llm and llm.get("primary"):
+        try:
+            llm_primary = PrimaryIntent(llm.get("primary", ""))
+        except ValueError:
+            llm_primary = None
+        try:
+            llm_sub = SubIntent(llm.get("sub") or "none")
+        except ValueError:
+            llm_sub = SubIntent.NONE
+        try:
+            llm_conf = float(llm.get("confidence", 0.8))
+        except (TypeError, ValueError):
+            llm_conf = 0.8
+
+    sem_primary = semantic.primary if semantic else None
+    sem_ok = bool(
+        semantic
+        and semantic.score >= semantic_threshold
+        and semantic.margin >= semantic_margin
+    )
+
+    # 1) LLM 高置信直接采纳
+    if llm_primary is not None and llm_conf >= llm_trust:
+        return _result_from(llm_primary, llm_sub or SubIntent.NONE, llm_conf, "llm")
+
+    # 2) LLM 与语义互证
+    if llm_primary is not None and sem_primary == llm_primary:
+        conf = min(0.99, max(llm_conf, semantic.score) + 0.1)
+        # 子意图优先取更具体的
+        sub = llm_sub if (llm_sub and llm_sub != SubIntent.NONE) else semantic.sub
+        return _result_from(llm_primary, sub or SubIntent.NONE, conf, "llm+semantic")
+
+    # 3) LLM 与规则互证
+    if llm_primary is not None and llm_primary == rule.primary:
+        sub = llm_sub if (llm_sub and llm_sub != SubIntent.NONE) else rule.sub
+        return _result_from(llm_primary, sub or SubIntent.NONE, max(llm_conf, rule.confidence), "llm+rule")
+
+    # 4) 有 LLM 但与其它层不一致：仍以 LLM 为准（它是最强语义），但降低置信度标记
+    if llm_primary is not None:
+        return _result_from(llm_primary, llm_sub or SubIntent.NONE, llm_conf, "llm")
+
+    # ---- 以下为「无 LLM」离线路径 ----
+    # 5) 规则高置信（命中复合短语，conf≥0.9）优先于「区分度不足」的语义结果。
+    #    离线英文向量对中文区分力弱，容易高分误判，故强规则优先。
+    strong_rule = rule.primary != PrimaryIntent.GENERAL_CHAT and rule.confidence >= 0.9
+    if strong_rule and not (sem_primary == rule.primary):
+        # 语义若明确且高区分度地指向别处，才考虑覆盖；否则信任强规则
+        if not (sem_ok and semantic.margin >= 0.15):
+            return rule
+
+    # 6) 语义路由兜底（分数 + 区分度达标）
+    if sem_ok:
+        return _result_from(semantic.primary, semantic.sub, semantic.score, "semantic")
+
+    # 7) 语义与规则一致时也可采纳（弱印证）
+    if sem_primary is not None and sem_primary == rule.primary:
+        return _result_from(rule.primary, rule.sub, max(rule.confidence, semantic.score), "rule+semantic")
+
+    # 8) 最终回退规则
+    return rule

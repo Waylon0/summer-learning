@@ -66,6 +66,18 @@ class Settings(BaseSettings):
     # ===================== 安全配置 =====================
     JWT_SECRET_KEY: str = "reimburse-agent-dev-secret-change-in-production"
 
+    # ===================== NLP / 意图理解配置 =====================
+    # 中文语义 embedding 后端: auto | sentence_transformers | chromadb | none
+    #   auto  — 依次尝试 本地/在线中文模型 → chromadb 内置 → none
+    #   none  — 关闭语义路由，仅用 规则 + LLM
+    EMBEDDING_BACKEND: str = "auto"
+    # 本地中文向量模型路径或名称（如 shibing624/text2vec-base-chinese 或本地目录）
+    EMBEDDING_MODEL: str = "shibing624/text2vec-base-chinese"
+    # 语义路由采纳阈值：最高相似度 ≥ 此值才直接采纳语义结果
+    INTENT_SEMANTIC_THRESHOLD: float = 0.72
+    # LLM 意图置信度阈值：≥ 此值直接信任 LLM 结果
+    INTENT_LLM_TRUST_THRESHOLD: float = 0.75
+
     # ===================== Pydantic 配置 =====================
     model_config = {
         "env_file": ".env",

@@ -301,23 +301,38 @@ async def classify_intent(state: ReimburseState) -> dict:
                 "user_name": state.get("user_name", ""),
             }
 
-    # --- 步骤1：规则关键词匹配 ---
-    # 如果有上下文，在提示词中注入上下文信息
+    # --- 步骤1：规则关键词匹配（快速首过，来自意图注册表）---
     intent_result = classify_by_keywords(last_msg)
 
-    # --- 步骤2：LLM 增强（优先使用 structured output，降级到 JSON 解析）---
+    # --- 步骤2：语义向量路由（NLP 层，抗自然语言表达变化；离线可兜底）---
+    semantic_result = None
+    try:
+        from app.agent.semantic_router import get_semantic_router
+        router = get_semantic_router()
+        if router.available():
+            semantic_result = router.route(last_msg)
+            if semantic_result:
+                logger.info(
+                    f"Semantic route: {semantic_result.primary.value}/{semantic_result.sub.value} "
+                    f"score={semantic_result.score:.3f} margin={semantic_result.margin:.3f}"
+                )
+    except Exception as e:
+        logger.warning(f"Semantic router error (ignored): {e}")
+
+    # --- 步骤3：LLM 语义分类（最强语义引擎）---
     from pydantic import BaseModel, Field
     class IntentOutput(BaseModel):
         primary: str = Field(default="general_chat")
         sub: str | None = Field(default="none")
         confidence: float = Field(default=0.8)
 
+    llm_data = None
     structured = await _try_llm_structured(
         [HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}")],
         IntentOutput,
     )
     if structured:
-        intent_result = merge_with_llm(intent_result, structured)
+        llm_data = structured
         logger.info(f"LLM structured intent: {structured}")
     else:
         llm_response = await _try_llm_async([
@@ -327,10 +342,20 @@ async def classify_intent(state: ReimburseState) -> dict:
             content = llm_response.strip().lstrip("```json").rstrip("```").strip()
             try:
                 llm_data = json.loads(content)
-                intent_result = merge_with_llm(intent_result, llm_data)
                 logger.info(f"LLM enhanced intent: {llm_data}")
             except (json.JSONDecodeError, ValueError):
-                pass
+                llm_data = None
+
+    # --- 步骤4：三层融合（规则 + 语义 + LLM，交叉印证降低误判）---
+    from app.agent.intents import fuse_intents
+    intent_result = fuse_intents(
+        rule=intent_result,
+        semantic=semantic_result,
+        llm=llm_data,
+        semantic_threshold=settings.INTENT_SEMANTIC_THRESHOLD,
+        llm_trust=settings.INTENT_LLM_TRUST_THRESHOLD,
+    )
+    logger.info(f"Fused intent: {intent_result.primary.value}/{intent_result.sub.value} (source={intent_result.source} conf={intent_result.confidence:.2f})")
 
     # --- 步骤3：从上下文中继承已确认的实体 ---
     dept = state.get("department", "")
@@ -387,7 +412,8 @@ def route_by_intent(
     state: ReimburseState
 ) -> Literal[
     "entity_extraction", "query_status", "policy_lookup",
-    "ocr_invoice", "approval_process", "general_response"
+    "ocr_invoice", "approval_process", "generate_invoice",
+    "modify_reimbursement", "general_response"
 ]:
     """根据一级意图路由到对应节点"""
     intent = state.get("intent", "general_chat")
@@ -1040,6 +1066,120 @@ def approval_process(state: ReimburseState) -> dict:
     return {"messages": [AIMessage(content="审批操作已记录，报销单状态已更新。")]}
 
 
+async def generate_invoice(state: ReimburseState) -> dict:
+    """
+    生成一张模拟增值税发票 PDF 并返回下载链接。
+
+    金额/类型/部门来源优先级:
+      1. 用户消息中直接提到的金额（如"生成1500元的发票"）
+      2. 若引用了报销单号 → 用该报销单的金额/类型/部门（含权限校验）
+      3. 会话上下文中最近一次的金额/类型
+    """
+    import asyncio
+    from app.agent.entities import _extract_amount, _extract_uuid
+    from app.agent.tools.reimburse_tools import generate_invoice_pdf
+    from app.services.ocr_svc import upload_file, get_file_url
+
+    messages_list = state.get("messages", [])
+    last_msg = messages_list[-1].content if messages_list else ""
+    entities = state.get("entities") or {}
+
+    user_id = state.get("user_id", "")
+    user_role = (state.get("user_role", "") or "").lower()
+    user_department = state.get("user_department", "")
+
+    amount = 0.0
+    expense_type = state.get("expense_type", "") or entities.get("expense_type", "")
+    department = state.get("department", "") or user_department
+    seller_name = ""
+    description = state.get("description", "") or entities.get("description", "")
+
+    # --- 来源2：引用了报销单号 → 取该单信息（带权限校验）---
+    reimb_id = state.get("reimb_id", "") or entities.get("reimbursement_id", "") or _extract_uuid(last_msg)
+    if reimb_id:
+        from app.agent.tools.reimburse_tools import query_reimbursement_status as _qstatus
+        result = await _qstatus(reimb_id=reimb_id)
+        if result.get("status") not in ("not_found", "unknown"):
+            # 权限校验：员工只能给自己的单开票，经理限本部门
+            owner_uid = result.get("user_id", "")
+            owner_dept = result.get("department", "")
+            if user_role == "employee" and owner_uid and owner_uid != user_id:
+                return {"messages": [AIMessage(content="⛔ 您只能为本人的报销单生成票据。")]}
+            if user_role == "manager" and owner_dept and owner_dept != user_department:
+                return {"messages": [AIMessage(content=f"⛔ 您只能为本部门（{user_department}）的报销单生成票据。")]}
+            if user_role not in ("employee", "manager", "admin", "finance"):
+                return {"messages": [AIMessage(content="⛔ 您尚未登录，无法生成票据。")]}
+            amount = float(result.get("total_amount", 0) or 0)
+            expense_type = expense_type or result.get("expense_type", "")
+            department = result.get("department", "") or department
+            description = description or result.get("description", "")
+
+    # --- 来源1：消息里直接给了金额（优先级最高，覆盖）---
+    msg_amount = _extract_amount(last_msg) if any(k in last_msg for k in ["元", "¥", "￥"]) else 0.0
+    if msg_amount > 0:
+        amount = msg_amount
+
+    # --- 来源3：上下文兜底 ---
+    if amount <= 0:
+        amount = float(state.get("total_amount", 0) or 0)
+
+    if amount <= 0:
+        return {"messages": [AIMessage(content=(
+            "请告诉我要生成票据的金额，例如：\"生成一张 1500 元的差旅费发票\"，"
+            "或指定报销单号：\"为报销单 6441a34d 生成票据\"。"
+        ))]}
+
+    # 费用类型 → 明细行名称
+    type_labels = {
+        "travel": "差旅费", "entertainment": "招待费", "office": "办公用品",
+        "communication": "通信费", "transport": "交通费", "meeting": "会议费",
+        "training": "培训费", "other": "服务费",
+    }
+    item_name = description or type_labels.get(expense_type, "服务费")
+
+    invoice_dict = {
+        "buyer_name": "中国石油华东分公司",
+        "seller_name": seller_name or "某某供应商有限公司",
+        "invoice_date": "",
+        "items": [{
+            "name": item_name, "specification": "", "unit": "项",
+            "quantity": 1, "unit_price": amount, "amount": amount, "tax_rate": "",
+        }],
+        "amount": amount,
+        "tax_amount": 0.0,
+        "total_with_tax": amount,
+        "remarks": f"报销单号: {reimb_id}" if reimb_id else "",
+    }
+
+    # 生成 PDF（放线程池），存储，返回下载链接
+    try:
+        pdf_path = await asyncio.to_thread(generate_invoice_pdf, invoice_dict)
+        with open(pdf_path, "rb") as f:
+            content = f.read()
+        import os as _os
+        object_name = await upload_file(content, _os.path.basename(pdf_path), "application/pdf")
+        download_url = await get_file_url(object_name)
+        try:
+            _os.remove(pdf_path)
+        except OSError:
+            pass
+    except Exception as e:
+        logger.error(f"发票生成失败: {e}")
+        return {"messages": [AIMessage(content="⚠️ 票据生成失败，请稍后重试。")]}
+
+    inv_no = invoice_dict.get("invoice_number", "")
+    logger.info(f"Invoice generated via agent: no={inv_no} amount={amount} object={object_name}")
+    return {"messages": [AIMessage(content=(
+        f"🧾 发票已生成！\n"
+        f"• 发票号码: {inv_no}\n"
+        f"• 项目: {item_name}\n"
+        f"• 价税合计: ¥{amount:,.2f}\n"
+        + (f"• 关联报销单: {reimb_id}\n" if reimb_id else "")
+        + f"• 下载地址: {download_url}\n"
+        f"（注：此为系统生成的模拟票据，仅供测试演示）"
+    ))]}
+
+
 async def modify_reimbursement(state: ReimburseState) -> dict:
     """
     修改/撤回报销单。
@@ -1213,6 +1353,7 @@ def build_graph():
         ("send_email", send_email),
         ("query_status", query_status),
         ("approval_process", approval_process),
+        ("generate_invoice", generate_invoice),
         ("modify_reimbursement", modify_reimbursement),
         ("policy_lookup", policy_lookup),
         ("general_response", general_response),
@@ -1230,6 +1371,7 @@ def build_graph():
         "policy_lookup": "policy_lookup",
         "ocr_invoice": "ocr_invoice",
         "approval_process": "approval_process",
+        "generate_invoice": "generate_invoice",
         "modify_reimbursement": "modify_reimbursement",
         "general_response": "general_response",
     })
@@ -1273,6 +1415,7 @@ def build_graph():
     builder.add_edge("modify_reimbursement", END)
     builder.add_edge("policy_lookup", END)
     builder.add_edge("approval_process", END)
+    builder.add_edge("generate_invoice", END)
     builder.add_edge("general_response", END)
 
     return builder.compile()
