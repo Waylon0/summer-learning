@@ -21,7 +21,7 @@ export default function AuthPage() {
       setAuth(res.access_token, res.user);
       message.success(`欢迎回来，${res.user.name}`);
     } catch (e) {
-      message.error((e as Error).message || '登录失败');
+      message.error(e instanceof Error ? e.message : '登录失败');
     }
     setLoading(false);
   };
@@ -33,7 +33,7 @@ export default function AuthPage() {
       setAuth(res.access_token, res.user);
       message.success(`注册成功，欢迎 ${res.user.name}`);
     } catch (e) {
-      message.error((e as Error).message || '注册失败');
+      message.error(e instanceof Error ? e.message : '注册失败');
     }
     setLoading(false);
   };
@@ -115,7 +115,7 @@ export default function AuthPage() {
     }}>
       <Card
         style={{ width: 420, borderRadius: 12, boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}
-        bodyStyle={{ padding: '32px 32px 24px' }}
+        styles={{ body: { padding: '32px 32px 24px' } }}
       >
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3} style={{ margin: 0, color: '#1677ff' }}>ReimburseAgent</Title>

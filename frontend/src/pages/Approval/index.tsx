@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Card, Button, Table, Tag, Space, Modal, Input, message, Spin, Empty, Row, Col, Descriptions, Popconfirm,
+  Card, Button, Table, Tag, Space, Input, message, Spin, Empty, Row, Col, Descriptions, Popconfirm,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, RollbackOutlined,
@@ -28,8 +28,7 @@ export default function Approval() {
   const fetchPending = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await getReimbursements({ limit: 100 });
-      // 默认只显示待审批的，也支持查看全部
+      const list = await getReimbursements({ status: 'pending', limit: 100 });
       setRecords(list);
       if (selected) {
         const updated = list.find((r) => r.id === selected.id);
@@ -39,7 +38,7 @@ export default function Approval() {
       message.error('加载报销列表失败');
     }
     setLoading(false);
-  }, [selected?.id]);
+  }, [selected]);
 
   useEffect(() => { fetchPending(); }, [fetchPending]);
 
@@ -57,7 +56,7 @@ export default function Approval() {
       setComment('');
       fetchPending();
     } catch (e) {
-      message.error((e as Error).message || '操作失败');
+      message.error(e instanceof Error ? e.message : '操作失败');
     }
     setActionLoading(false);
   };
@@ -76,10 +75,30 @@ export default function Approval() {
       render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label}</Tag>,
     },
     {
+      title: '等待', dataIndex: 'created_at', key: 'wait_time', width: 90,
+      render: (v: string) => {
+        if (!v) return '-';
+        const hours = dayjs().diff(dayjs(v), 'hour');
+        if (hours < 1) return <span style={{ color: '#52c41a' }}>刚刚</span>;
+        if (hours < 24) return <span>{hours} 小时</span>;
+        const days = Math.floor(hours / 24);
+        return <span style={{ color: hours > 48 ? '#ff4d4f' : undefined, fontWeight: hours > 48 ? 600 : undefined }}>{days} 天</span>;
+      },
+      sorter: (a: ReimbursementRecord, b: ReimbursementRecord) =>
+        (a.created_at ? dayjs(a.created_at).valueOf() : 0) - (b.created_at ? dayjs(b.created_at).valueOf() : 0),
+      defaultSortOrder: 'ascend' as const,
+    },
+    {
       title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160,
       render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-',
     },
   ];
+
+  const sortedRecords = [...records].sort((a, b) => {
+    if (a.status === 'pending' && b.status !== 'pending') return -1;
+    if (a.status !== 'pending' && b.status === 'pending') return 1;
+    return (a.created_at ? dayjs(a.created_at).valueOf() : 0) - (b.created_at ? dayjs(b.created_at).valueOf() : 0);
+  });
 
   return (
     <div>
@@ -90,7 +109,7 @@ export default function Approval() {
           </Space>
         }
         extra={
-          <Button icon={<ReloadOutlined />} onClick={fetchPending} loading={loading}>刷新</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchPending()} loading={loading}>刷新</Button>
         }
         style={{ marginBottom: 16 }}
       >
@@ -99,7 +118,7 @@ export default function Approval() {
             <Empty description="暂无报销记录" style={{ padding: 40 }} />
           ) : (
             <Table
-              dataSource={records}
+              dataSource={sortedRecords}
               columns={columns}
               rowKey="id"
               size="middle"

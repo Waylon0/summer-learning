@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Layout, Menu, Typography, Tag, Space, Button, Dropdown, Spin } from 'antd';
+import { Layout, Menu, Typography, Tag, Button, Dropdown, Spin } from 'antd';
 import {
   MessageOutlined,
   DashboardOutlined,
@@ -33,10 +33,24 @@ const pageMap: Record<string, React.ReactNode> = {
   status: <StatusQuery />,
 };
 
+const roleDefaults: Record<string, string> = {
+  employee: 'chat',
+  manager: 'dashboard',
+  admin: 'dashboard',
+  finance: 'dashboard',
+};
+
+const roleTitles: Record<string, string> = {
+  employee: '我的工作台',
+  manager: '团队报销管理',
+  admin: '企业财务总览',
+  finance: '财务审核中心',
+};
+
 export default function App() {
-  const [active, setActive] = useState('chat');
-  const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected' | 'loading'>('loading');
   const { user, token, loading, initialize, logout } = useAuthStore();
+  const [active, setActive] = useState(roleDefaults[user?.role || 'employee'] || 'chat');
+  const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected' | 'loading'>('loading');
 
   useEffect(() => { initialize(); }, [initialize]);
 
@@ -90,7 +104,7 @@ export default function App() {
             ReimburseAgent
           </Title>
           <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
-            {user.department} · {({ employee: '员工', manager: '经理', admin: '管理员', finance: '财务' })[user.role]}
+            {user.department} · {({ employee: '员工', manager: '经理', admin: '管理员', finance: '财务' })[user.role] || user.role}
           </Text>
         </div>
         <Menu
@@ -114,7 +128,7 @@ export default function App() {
           }}
         >
           <Title level={4} style={{ margin: 0, fontWeight: 500 }}>
-            企业财务报销助手
+            {roleTitles[user.role] || '企业财务报销助手'}
           </Title>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
             <Tag color={dbStatus === 'connected' ? 'success' : dbStatus === 'disconnected' ? 'error' : 'default'}>
@@ -150,7 +164,10 @@ export default function App() {
             overflow: 'auto',
           }}
         >
-          {pageMap[active]}
+          <div key={active} style={{ animation: 'fadeIn 0.25s ease-in' }}>
+            <style>{'@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }'}</style>
+            {pageMap[active]}
+          </div>
         </Content>
       </Layout>
     </Layout>
