@@ -1,18 +1,19 @@
 """
 =============================================================================
-app/api/v1/reimbursements.py — 报销单 CRUD API（用户隔离）
+app/api/v1/reimbursements.py — 报销单 CRUD API（用户隔离 + 撤销）
 =============================================================================
-- employee: 只能创建/查看本人的报销单
-- manager: 可查看本部门全部报销单
-- admin/finance: 可查看全部报销单
+- employee: 只能创建/查看本人的报销单，可撤销 pending 状态的自己的单子
+- manager: 可查看本部门全部报销单、审批本部门报销
+- admin: 全局权限，可查看全部报销单
 =============================================================================
 """
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from app.core.database import get_db
-from app.core.deps import get_current_user, get_optional_user
+from app.core.database import get_db, engine
+from app.core.deps import get_current_user
 from app.services.reimbursement_svc import ReimbursementService
 from app.schemas.reimbursement import ReimbursementCreate, ReimbursementResponse
 from app.models.user import User
@@ -27,6 +28,9 @@ async def create_reimbursement(
     user: User = Depends(get_current_user),
 ):
     """创建报销单 — 自动绑定当前登录用户"""
+    # 强制覆盖为 JWT 用户信息（防止伪造）
+    data.user_id = user.id
+    data.user_name = user.name
     svc = ReimbursementService(db)
     logger.info(f"创建报销: user={user.name} dept={data.department} type={data.expense_type}")
     reimb = await svc.create(data, data.invoices)
@@ -40,10 +44,9 @@ async def get_reimbursement(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """查询单个报销单 — 普通员工只能查自己的"""
+    """查询单个报销单 — 权限隔离"""
     svc = ReimbursementService(db)
     reimb = await svc.get_by_id(reimb_id)
-    # 权限检查
     if user.role == "employee" and reimb.user_id != user.id:
         raise HTTPException(status_code=403, detail="无权查看他人的报销单")
     if user.role == "manager" and reimb.department != user.department:
@@ -72,13 +75,12 @@ async def list_reimbursements(
 ):
     """多维度查询报销单列表（权限隔离）"""
     svc = ReimbursementService(db)
-    # 权限范围
     if user.role == "employee":
-        user_id = user.id  # 强制只看自己
+        user_id = user.id
     elif user.role == "manager":
         if department and department != user.department:
             raise HTTPException(status_code=403, detail=f"只能查看{user.department}的报销单")
-        department = user.department  # 只看本部门
+        department = user.department
 
     reimbs, total = await svc.search(
         user_id=user_id, status=status, department=department,
@@ -88,6 +90,43 @@ async def list_reimbursements(
         sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset,
     )
     return [_to_response(r) for r in reimbs]
+
+
+@router.post("/{reimb_id}/cancel")
+async def cancel_reimbursement(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    撤销报销单 — 仅 pending 状态且为本人提交的可撤销。
+
+    权限:
+      - employee: 只能撤销自己的 pending 报销单
+      - manager/admin: 可撤销本部门/全部 pending 报销单
+    """
+    svc = ReimbursementService(db)
+    reimb = await svc.get_by_id(reimb_id)
+
+    # 权限检查
+    if user.role == "employee" and reimb.user_id != user.id:
+        raise HTTPException(status_code=403, detail="只能撤销自己的报销单")
+    if user.role == "manager" and reimb.department != user.department:
+        raise HTTPException(status_code=403, detail=f"无权撤销{reimb.department}的报销单")
+
+    # 状态检查
+    if reimb.status != "pending":
+        readable_status = {"approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款", "cancelled": "已撤销"}
+        cn = readable_status.get(reimb.status, reimb.status)
+        raise HTTPException(status_code=400, detail=f"报销单状态为「{cn}」，只有「待审批」状态才能撤销")
+
+    # 执行撤销
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE reimbursements SET status = 'cancelled' WHERE id = :rid"), {"rid": reimb_id})
+        await conn.execute(text("UPDATE approval_records SET action = 'cancelled', comment = '申请人主动撤销' WHERE reimbursement_id = :rid"), {"rid": reimb_id})
+
+    logger.info(f"报销单撤销: {reimb_id} by {user.username}")
+    return {"reimb_id": reimb_id, "status": "cancelled", "message": "报销单已撤销"}
 
 
 def _to_response(reimb) -> ReimbursementResponse:

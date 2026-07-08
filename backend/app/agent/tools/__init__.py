@@ -14,7 +14,7 @@ from app.agent.tools.reimburse_tools import (
     send_approval_email,
     save_reimbursement_to_db,
     query_reimbursement_status,
-    query_reimbursement_list,
+    get_current_user_info,
     ALL_TOOLS,
 )
 
@@ -56,9 +56,14 @@ TOOL_DESCRIPTIONS = [
         "parameters": {"reimb_id": "string", "date_from": "string", "date_to": "string"},
     },
     {
-        "name": "query_reimbursement_list",
-        "description": "查询报销单列表，支持按状态筛选。适用于用户询问'我的报销'、'列出所有报销单'、'待审批的有哪些'等泛化查询，不需要提供报销单号。",
-        "parameters": {"status": "string (可选)", "limit": "int (默认50)", "user_id": "string (可选)"},
+        "name": "query_reimbursement_status",
+        "description": "根据报销单号查询审批流转进度和当前状态。",
+        "parameters": {"reimb_id": "string", "date_from": "string", "date_to": "string"},
+    },
+    {
+        "name": "get_current_user_info",
+        "description": "获取当前登录用户信息（ID、姓名、部门、角色）。当用户说\"我要报销\"时自动调用，用其部门作为默认值。",
+        "parameters": {"user_id": "string", "user_name": "string", "department": "string", "role": "string"},
     },
 ]
 
@@ -67,5 +72,5 @@ __all__ = [
     "ocr_recognize_invoice", "compliance_check", "budget_check",
     "generate_reimbursement_pdf", "send_approval_email",
     "save_reimbursement_to_db", "query_reimbursement_status",
-    "query_reimbursement_list",
+    "get_current_user_info",
 ]

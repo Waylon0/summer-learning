@@ -23,7 +23,6 @@ class UserRole(str, Enum):
     EMPLOYEE = "employee"
     MANAGER = "manager"
     ADMIN = "admin"
-    FINANCE = "finance"
 
 
 class User(Base):

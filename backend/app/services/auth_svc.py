@@ -20,7 +20,7 @@ class AuthService:
         self, username: str, password: str, name: str,
         department: str, email: str = None, role: str = "employee",
     ) -> dict:
-        """注册新用户"""
+        """注册新用户 — 只能注册为 employee, manager/admin 由超管分配"""
         existing = await self.db.scalar(
             select(User).where(User.username == username)
         )
@@ -30,10 +30,10 @@ class AuthService:
                 error_code="USERNAME_EXISTS",
             )
 
-        valid_roles = {"employee", "manager", "admin", "finance"}
-        if role not in valid_roles:
+        # 注册强制为 employee
+        if role != "employee":
             raise BusinessException(
-                message=f"无效角色: {role}，允许值: {valid_roles}",
+                message="注册时只能选择「员工」角色，部门经理和超级管理员由系统管理员分配",
                 error_code="INVALID_ROLE",
             )
 
@@ -43,7 +43,7 @@ class AuthService:
             name=name,
             email=email,
             department=department,
-            role=role,
+            role="employee",  # 强制
         )
         self.db.add(user)
         await self.db.commit()

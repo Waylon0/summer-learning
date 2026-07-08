@@ -41,7 +41,6 @@ from app.agent.tools import (
     generate_reimbursement_pdf,
     send_approval_email,
     query_reimbursement_status,
-    query_reimbursement_list,
     save_reimbursement_to_db,
 )
 from app.agent.intents import (
@@ -132,8 +131,9 @@ def _try_llm(messages: list) -> str:
         return resp.content
     except Exception as e:
         if _llm_available is None:
-            logger.warning(f"LLM unavailable: {e}")
-        _llm_available = False
+            logger.warning(f"LLM unavailable (sync): {e}")
+        if any(k in str(e).lower() for k in ["connect", "resolve", "refused", "timeout"]):
+            _llm_available = False
         return ""
 
 
@@ -148,8 +148,9 @@ async def _try_llm_async(messages: list) -> str:
         return resp.content
     except Exception as e:
         if _llm_available is None:
-            logger.warning(f"LLM unavailable: {e}")
-        _llm_available = False
+            logger.warning(f"LLM unavailable (async): {e}")
+        if any(k in str(e).lower() for k in ["connect", "resolve", "refused", "timeout"]):
+            _llm_available = False
         return ""
 
 
@@ -176,9 +177,14 @@ async def _try_llm_structured(messages: list, output_schema: type) -> dict | Non
             return resp.model_dump()
         return resp
     except Exception as e:
+        err_msg = str(e)
+        # Only mark LLM as unavailable on connection errors, not parse failures
         if _llm_available is None:
-            logger.warning(f"LLM structured unavailable: {e}")
-        _llm_available = False
+            if "parse" in err_msg.lower() or "validation" in err_msg.lower() or "pydantic" in err_msg.lower():
+                logger.info(f"LLM structured parse error (LLM still available): {err_msg[:120]}")
+            else:
+                logger.warning(f"LLM structured unavailable: {e}")
+                _llm_available = False
         return None
 
 
@@ -264,6 +270,8 @@ async def classify_intent(state: ReimburseState) -> dict:
                 "session_id": session_id,
                 "is_contextual_fill": True,
                 "context_summary": ctx.get_context_summary(),
+                "user_id": state.get("user_id", ""),
+                "user_name": state.get("user_name", ""),
             }
         elif contextual_intent and contextual_intent.get("action") == "confirm":
             logger.info(f"Contextual confirmation: '{last_msg}' confirms intent={contextual_intent['primary']}")
@@ -284,6 +292,8 @@ async def classify_intent(state: ReimburseState) -> dict:
                 "session_id": session_id,
                 "is_contextual_fill": False,
                 "context_summary": ctx.get_context_summary(),
+                "user_id": state.get("user_id", ""),
+                "user_name": state.get("user_name", ""),
             }
 
     # --- 步骤1：规则关键词匹配 ---
@@ -293,9 +303,9 @@ async def classify_intent(state: ReimburseState) -> dict:
     # --- 步骤2：LLM 增强（优先使用 structured output，降级到 JSON 解析）---
     from pydantic import BaseModel, Field
     class IntentOutput(BaseModel):
-        primary: str = Field(description="一级意图")
-        sub: str = Field(description="二级意图")
-        confidence: float = Field(description="置信度 0-1")
+        primary: str = Field(default="general_chat")
+        sub: str | None = Field(default="none")
+        confidence: float = Field(default=0.8)
 
     structured = await _try_llm_structured(
         [HumanMessage(content=f"{INTENT_CLASSIFY_PROMPT}\n\n用户输入: {last_msg}")],
@@ -333,9 +343,9 @@ async def classify_intent(state: ReimburseState) -> dict:
 
     # --- 步骤4：提取实体 + 检查缺失槽位 ---
     entities = extract_entities(last_msg)
-    # 合并上下文实体（新值优先）
+    # 合并上下文实体（新值优先，JWT 兜底）
     merged_entities = ReimbursementEntities(
-        department=entities.department or dept,
+        department=entities.department or dept or state.get("department", ""),
         expense_type=entities.expense_type or etype,
         total_amount=entities.total_amount if entities.total_amount > 0 else amt,
         description=entities.description or desc,
@@ -360,6 +370,8 @@ async def classify_intent(state: ReimburseState) -> dict:
         "session_id": session_id,
         "is_contextual_fill": is_contextual,
         "context_summary": ctx.get_context_summary() if ctx else "",
+        "user_id": state.get("user_id", ""),
+        "user_name": state.get("user_name", ""),
     }
 
 
@@ -407,6 +419,11 @@ async def entity_extraction(state: ReimburseState) -> dict:
     context_amount = ctx.total_amount if ctx else 0.0
     context_desc = ctx.description if ctx else ""
 
+    # JWT 用户默认信息（优先级低于上下文，高于空值）
+    state_dept = state.get("department") or ""
+    state_type = state.get("expense_type") or ""
+    state_desc = state.get("description") or ""
+
     # LLM 增强实体提取
     llm_entities = ""
     entity_prompt = ENTITY_EXTRACT_PROMPT
@@ -421,12 +438,12 @@ async def entity_extraction(state: ReimburseState) -> dict:
     # 合并规则 + LLM 实体
     entities = extract_entities(last_msg, llm_entities)
 
-    # 合并上下文实体（当前消息的实体优先，空缺才用上下文的）
+    # 合并实体（优先级: 用户消息 > 会话上下文 > JWT 默认值）
     merged = ReimbursementEntities(
-        department=entities.department or context_dept,
-        expense_type=entities.expense_type or context_type,
+        department=entities.department or context_dept or state_dept,
+        expense_type=entities.expense_type or context_type or state_type,
         total_amount=entities.total_amount if entities.total_amount > 0 else context_amount,
-        description=entities.description or context_desc,
+        description=entities.description or context_desc or state_desc,
         destination=entities.destination,
         guest_count=entities.guest_count,
         guest_company=entities.guest_company,
@@ -682,6 +699,14 @@ async def save_to_db(state: ReimburseState) -> dict:
     description = state.get("description") or ""
     user_id = state.get("user_id") or "anonymous"
     user_name = state.get("user_name") or "未知用户"
+    # 尝试从会话上下文获取用户名
+    if user_name == "未知用户" and user_id != "anonymous":
+        from app.agent.sessions import get_session_store
+        ctx = get_session_store().get_context(state.get("session_id", ""))
+        if ctx and ctx.user_id == user_id and ctx.user_id:
+            user_name = ctx.user_id  # fallback, real name from JWT
+    if user_name == "未知用户":
+        user_name = user_id  # 用 user_id 兜底
 
     logger.info(
         f"Saving to DB: dept={department} type={expense_type} "
@@ -1015,15 +1040,64 @@ async def modify_reimbursement(state: ReimburseState) -> dict:
 
 async def general_response(state: ReimburseState) -> dict:
     """
-    通用回复 — RAG 增强 + 闲聊降级。
+    通用回复 — 用户信息查询 + RAG 增强 + 闲聊降级。
 
-    1. 检索知识库获取相关上下文
-    2. 命中 → 基于知识库回答
-    3. 未命中 → LLM 自由对话，不强制报销主题
+    1. 检测用户信息查询 (我是谁/我的部门/我的信息等)
+    2. RAG 检索知识库
+    3. LLM 自由对话
     """
     messages = state["messages"]
     last_msg = messages[-1].content if messages else "你好"
 
+    # ---- 用户信息查询检测 ----
+    user_info_keywords = ["我是谁", "我的信息", "我的部门", "我在哪个部门", "我的身份", "你是谁",
+                          "我的角色", "我的权限", "列出我的信息", "个人信息", "当前用户",
+                          "我是哪个部门", "我属于哪个部门", "我是什么角色", "查看我的信息",
+                          "所属部门", "什么部门", "哪个部门"]
+    is_user_query = any(kw in last_msg for kw in user_info_keywords)
+    # 额外检测：以"我"开头且包含"部门"的短消息
+    if not is_user_query and last_msg.strip().startswith("我") and "部门" in last_msg and len(last_msg) < 20:
+        is_user_query = True
+
+    if is_user_query:
+        user_id = state.get("user_id") or ""
+        user_name = state.get("user_name") or ""
+        user_dept = state.get("department") or ""
+        role_map = {"employee": "普通员工", "manager": "部门经理", "admin": "系统管理员"}
+        role_cn = role_map.get(state.get("role", ""), "未知")
+        logger.info(f"User query: user_id={user_id[:8] if user_id else 'EMPTY'} name={user_name} dept={user_dept}")
+
+        # DB fallback
+        if not user_name and user_id:
+            try:
+                from sqlalchemy import text
+                from app.core.database import engine
+                async with engine.connect() as conn:
+                    r = await conn.execute(text("SELECT name, department, role FROM users WHERE id = :uid"), {"uid": user_id})
+                    row = r.fetchone()
+                    if row:
+                        user_name = row.name or user_name
+                        user_dept = row.department or user_dept
+                        role_cn = role_map.get(row.role, "未知")
+            except Exception:
+                pass
+
+        if user_id:
+            return {"messages": [AIMessage(
+                content=(
+                    f"👤 您的个人信息：\n\n"
+                    f"• 姓名：{user_name}\n"
+                    f"• 部门：{user_dept}\n"
+                    f"• 角色：{role_cn}\n"
+                    f"• 用户ID：{user_id[:8]}...\n\n"
+                    f"如需修改信息，请联系系统管理员。"
+                )
+            )]}
+        return {"messages": [AIMessage(
+            content=f"⚠️ 您当前未登录，无法获取个人信息。\n请先登录后再查询。"
+        )]}
+
+    # ---- RAG + LLM 通用回复 ----
     from app.agent.knowledge.retriever import build_context_for_llm
     kb_context = build_context_for_llm(last_msg, top_k=2)
     has_kb = bool(kb_context and len(kb_context) > 20)
@@ -1034,7 +1108,8 @@ async def general_response(state: ReimburseState) -> dict:
         prompt = (
             f"{SYSTEM_PROMPT}\n\n"
             f"知识库中没有找到与用户问题直接相关的内容。"
-            f"请以友好、专业的财务助手身份自由回答。"
+            f"请以友好、专业的助手身份自由回答。"
+            f"不仅可以回答财务问题，也可以处理办公场景中的各类咨询。"
             f"不要编造不存在的政策条款。\n\n"
             f"用户: {last_msg}"
         )
@@ -1046,9 +1121,10 @@ async def general_response(state: ReimburseState) -> dict:
     return {"messages": [AIMessage(
         content=f"你好！我是财务报销助手。\n\n"
                 f"• 新建报销：\"我要报销差旅费 1500 元，部门技术部\"\n"
-                f"• 查询所有：\"列出我的报销记录\" / \"有哪些待审批的？\"\n"
+                f"• 查询记录：\"列出我的报销记录\" / \"有哪些待审批的？\"\n"
                 f"• 查询进度：\"查询 a1b2c3d4 的审批进度\"\n"
                 f"• 政策咨询：\"差旅费标准是多少？\"\n"
+                f"• 个人信息：\"我的部门是什么？\" / \"我是谁？\"\n"
                 f"• 上传票据：直接上传发票文件即可识别"
     )]}
 

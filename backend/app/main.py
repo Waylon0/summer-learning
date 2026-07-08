@@ -38,14 +38,42 @@ from app.api.v1.budget import router as budget_router
 from app.api.v1.upload import router as upload_router
 from app.api.v1.approval import router as approval_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.admin import router as admin_router
 
 settings = get_settings()
 logger = setup_logging()
 
 
 # =============================================================================
-# 生命周期管理
+# 增量 Schema 迁移 (ALTER TABLE ADD COLUMN IF NOT EXISTS)
 # =============================================================================
+async def _migrate_schema(conn):
+    """为已有表添加缺失的列，兼容旧数据库"""
+    # 获取引擎 dialect 类型
+    dialect_name = engine.dialect.name
+    if dialect_name == "sqlite":
+        return  # SQLite ALTER ADD COLUMN 不支持 IF NOT EXISTS，但 SQLA create_all 已处理
+
+    import asyncio
+    from sqlalchemy import text
+
+    migrations = [
+        # invoices 表扩展字段 (发票格式升级)
+        ("invoices", "invoice_type", "VARCHAR(32)"),
+        ("invoices", "seller_tax_id", "VARCHAR(32)"),
+        ("invoices", "buyer_tax_id", "VARCHAR(32)"),
+        ("invoices", "tax_amount", "NUMERIC(12, 2) DEFAULT 0"),
+        ("invoices", "total_with_tax", "NUMERIC(12, 2)"),
+    ]
+
+    for table, column, col_type in migrations:
+        try:
+            await conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}")
+            )
+        except Exception:
+            pass  # 列已存在或数据库不支持，跳过
+    logger.info("✅ Schema migration checked")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用启动与关闭回调"""
@@ -55,16 +83,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"  API Key: {settings.openai_api_key_masked}")
     logger.info(f"{'='*60}")
 
-    # --- 启动：自动创建数据库表 ---
-    import asyncio as _asyncio
+    # --- 启动：自动创建数据库表 + 增量迁移 ---
     try:
-        async with _asyncio.timeout(8):
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await _migrate_schema(conn)
         logger.info("✅ Database tables ready")
-    except TimeoutError:
-        logger.warning("⚠️  Database connection timeout — tables may not be created")
     except Exception as e:
+        logger.error(f"❌ Database init failed: {e}")
         db_url = settings.DATABASE_URL
         # 脱敏打印：隐藏密码
         from urllib.parse import urlparse as _urlparse
@@ -193,6 +219,7 @@ app.include_router(budget_router, prefix="/api/v1")
 app.include_router(upload_router, prefix="/api/v1")
 app.include_router(approval_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 
 
 # =============================================================================

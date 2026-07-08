@@ -59,35 +59,22 @@ class InvoiceLineItem(BaseModel):
 
 
 class InvoiceInfo(BaseModel):
-    """
-    发票结构化信息（对标中国增值税发票标准格式）。
+    """发票结构化信息（兼容旧数据库 NULL 字段）"""
+    invoice_code: str = ""
+    invoice_number: str = ""
+    invoice_date: str | None = None  # 旧数据可能为 NULL
+    invoice_type: str = ""            # NULL 时默认空字符串
 
-    核心字段:
-      - 发票头部: 代码、号码、日期、类型
-      - 交易双方: 购买方/销售方名称+税号
-      - 金额: 合计金额、税额、价税合计
-      - 明细: 货物清单（支持多行）
-      - 其他: 备注、收款人、复核人、开票人
-    """
-    # 发票头部
-    invoice_code: str = ""               # 发票代码（12位）
-    invoice_number: str = ""             # 发票号码（8位）
-    invoice_date: str = ""               # 开票日期 YYYY-MM-DD
-    invoice_type: str = ""               # 发票类型: 增值税普通发票/专用发票/电子普通发票
+    buyer_name: str = ""
+    buyer_tax_id: str = ""
+    seller_name: str = ""
+    seller_tax_id: str = ""
 
-    # 交易双方
-    buyer_name: str = ""                 # 购买方名称
-    buyer_tax_id: str = ""               # 购买方纳税人识别号
-    seller_name: str = ""                # 销售方名称
-    seller_tax_id: str = ""              # 销售方纳税人识别号
+    amount: float = 0.0
+    tax_amount: float = 0.0
+    total_with_tax: float | None = None  # 旧数据可能为 NULL
 
-    # 金额
-    amount: float = 0.0                  # 合计金额（不含税）
-    tax_amount: float = 0.0              # 税额
-    total_with_tax: float = 0.0          # 价税合计
-
-    # 明细
-    items: list[InvoiceLineItem] = []    # 货物清单
+    items: list[InvoiceLineItem] = []
 
     # 其他信息
     remarks: str = ""                    # 备注

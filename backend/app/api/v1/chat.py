@@ -38,7 +38,8 @@ def _build_initial_state(request: ChatRequest, ctx: SessionContext, is_contextua
         "sub_intent": ctx.last_sub_intent if is_contextual else "",
         "intent_result": {},
         "session_id": session_id,
-        "department": ctx.department or (user.department if user else "") if is_contextual else (user.department if user else ""),
+        # JWT 用户默认部门（始终以 JWT 为准，后续由 entity_extraction 三层层级回退）
+        "department": ctx.department or (user.department if user else ""),
         "expense_type": ctx.expense_type if is_contextual else "",
         "total_amount": ctx.total_amount if is_contextual else 0.0,
         "description": ctx.description if is_contextual else "",

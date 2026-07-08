@@ -936,6 +936,33 @@ async def query_reimbursement_list(
 
 
 # =============================================================================
+# 工具 8：获取当前登录用户信息
+# =============================================================================
+def get_current_user_info(
+    user_id: str = "", user_name: str = "", department: str = "", role: str = "",
+) -> dict:
+    """
+    获取当前 JWT 会话中的用户信息。
+
+    Agent 在以下场景自动调用:
+      - 用户说"我要报销"但未指定部门 → 自动使用用户所属部门
+      - 需要确认用户身份时
+
+    Returns:
+        {"user_id": "...", "user_name": "...", "department": "...", "role": "..."}
+    """
+    if not user_name:
+        return {"user_id": "", "user_name": "未知用户", "department": "", "role": "", "hint": "请先登录"}
+    return {
+        "user_id": user_id,
+        "user_name": user_name,
+        "department": department,
+        "role": role,
+        "hint": f"当用户未指定部门时，默认使用部门: {department}",
+    }
+
+
+# =============================================================================
 # 工具集合：供外部引用
 # =============================================================================
 ALL_TOOLS = [
@@ -946,5 +973,5 @@ ALL_TOOLS = [
     send_approval_email,
     save_reimbursement_to_db,
     query_reimbursement_status,
-    query_reimbursement_list,
+    get_current_user_info,
 ]

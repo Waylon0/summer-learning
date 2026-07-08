@@ -1,13 +1,12 @@
 """
 =============================================================================
-app/api/v1/approval.py — 审批操作 API（部门经理权限守卫）
+app/api/v1/approval.py — 审批操作 API（部门经理/超管权限）
 =============================================================================
-审批人必须是 department_manager / admin / finance 角色。
-审批人只能审批本部门的报销单（admin/finance 可跨部门）。
+多经理制：同一部门可有多位经理，任意一位审批通过即可。
+管理员可跨部门审批。
 =============================================================================
 """
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
@@ -28,17 +27,17 @@ async def submit_approval(
     approver: User = Depends(require_department_manager()),
 ):
     """
-    提交审批操作（仅部门经理及以上角色可操作）。
+    提交审批操作（部门经理或超管可操作）。
 
-    权限规则:
-      - employee 角色: 403 拒绝
-      - manager 角色: 只能审批本部门报销单
-      - admin/finance 角色: 可审批所有报销单
+    多经理制:
+      - 同一部门可有多位经理，任意一位审批通过即可
+      - 管理员可跨部门审批
+      - 员工 403 拒绝
     """
     logger.info(f"审批请求: user={approver.username}({approver.role}) reimb={action.reimbursement_id} action={action.action}")
 
-    # 非 admin/finance 的 manager 只能审批本部门报销单
-    if approver.role not in ("admin", "finance"):
+    # 管理员可跨部门，经理只能审批本部门
+    if approver.role != "admin":
         reimb = await db.get(Reimbursement, action.reimbursement_id)
         if not reimb:
             raise HTTPException(status_code=404, detail="报销单不存在")
@@ -47,12 +46,11 @@ async def submit_approval(
                 status_code=403,
                 detail=f"您只能审批{approver.department}的报销单，该报销单属于{reimb.department}",
             )
-        # employee 角色已在 require_department_manager 中拒绝
 
     svc = ApprovalService(db)
     record = await svc.record(
         action.reimbursement_id,
-        approver.name,  # 使用 JWT 中的真实姓名
+        approver.name,
         action.action,
         action.comment,
     )

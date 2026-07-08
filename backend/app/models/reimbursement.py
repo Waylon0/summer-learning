@@ -131,18 +131,18 @@ class Invoice(Base):
         return {
             "id": self.id,
             "reimbursement_id": self.reimbursement_id,
-            "invoice_code": self.invoice_code,
-            "invoice_number": self.invoice_number,
+            "invoice_code": self.invoice_code or "",
+            "invoice_number": self.invoice_number or "",
             "invoice_date": self.invoice_date.isoformat() if self.invoice_date else None,
-            "invoice_type": self.invoice_type,
-            "seller_name": self.seller_name,
-            "seller_tax_id": self.seller_tax_id,
-            "buyer_name": self.buyer_name,
-            "buyer_tax_id": self.buyer_tax_id,
+            "invoice_type": self.invoice_type or "",
+            "seller_name": self.seller_name or "",
+            "seller_tax_id": self.seller_tax_id or "",
+            "buyer_name": self.buyer_name or "",
+            "buyer_tax_id": self.buyer_tax_id or "",
             "amount": float(self.amount),
             "tax_amount": float(self.tax_amount) if self.tax_amount else 0,
             "total_with_tax": float(self.total_with_tax) if self.total_with_tax else None,
-            "file_path": self.file_path,
+            "file_path": self.file_path or "",
         }
 
 

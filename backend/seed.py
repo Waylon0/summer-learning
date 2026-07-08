@@ -18,9 +18,9 @@ SEED_USERS = [
     {"username": "zhangsan", "password": "123456", "name": "张三", "department": "技术部", "role": "employee"},
     {"username": "lisi", "password": "123456", "name": "李四", "department": "研发部", "role": "employee"},
     {"username": "wangwu", "password": "123456", "name": "王五", "department": "市场部", "role": "employee"},
-    {"username": "manager_wang", "password": "123456", "name": "王总监", "department": "技术部", "role": "manager"},
-    {"username": "manager_li", "password": "123456", "name": "李总监", "department": "研发部", "role": "manager"},
-    {"username": "finance_zhao", "password": "123456", "name": "赵财务", "department": "财务部", "role": "finance"},
+    {"username": "manager_wang", "password": "123456", "name": "王经理", "department": "技术部", "role": "manager"},
+    {"username": "manager_li", "password": "123456", "name": "李经理", "department": "研发部", "role": "manager"},
+    {"username": "manager_zhao", "password": "123456", "name": "赵经理", "department": "技术部", "role": "manager"},
 ]
 
 SEED_BUDGETS = [
