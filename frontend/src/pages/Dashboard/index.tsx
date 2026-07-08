@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
-import { Card, Row, Col, Statistic, Progress, Table, Spin } from 'antd';
-import { WalletOutlined, RiseOutlined, FallOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Statistic, Progress, Table, Skeleton, Space } from 'antd';
+import { WalletOutlined, RiseOutlined, FallOutlined, TrophyOutlined } from '@ant-design/icons';
 import { Chart } from '@antv/g2';
 import { getAllBudgets } from '@/services/api';
 import type { BudgetInfo } from '@/types';
@@ -80,7 +80,27 @@ export default function Dashboard() {
     };
   }, [budgets]);
 
-  if (loading) return <Spin style={{ display: 'block', margin: '100px auto' }} />;
+  if (loading) {
+    return (
+      <div style={{ padding: 24 }}>
+        <Row gutter={16} style={{ marginBottom: 24 }}>
+          {[1, 2, 3].map((i) => (
+            <Col span={8} key={i}>
+              <Card><Skeleton active paragraph={{ rows: 1 }} /></Card>
+            </Col>
+          ))}
+        </Row>
+        <Card style={{ marginBottom: 24 }}><Skeleton active paragraph={{ rows: 3 }} /></Card>
+        <Row gutter={16}>
+          {[1, 2].map((i) => (
+            <Col span={12} key={i}>
+              <Card><Skeleton active paragraph={{ rows: 4 }} /></Card>
+            </Col>
+          ))}
+        </Row>
+      </div>
+    );
+  }
 
   const totalBudget = budgets.reduce((s, b) => s + b.annual_budget, 0);
   const totalUsed = budgets.reduce((s, b) => s + b.used_amount, 0);
@@ -104,7 +124,7 @@ export default function Dashboard() {
       title: '剩余',
       dataIndex: 'remaining',
       key: 'remaining',
-      render: (v: number, r: BudgetInfo) => (
+      render: (v: number) => (
         <span style={{ color: v < 0 ? '#ff4d4f' : '#52c41a' }}>¥{v.toLocaleString()}</span>
       ),
     },
@@ -164,6 +184,42 @@ export default function Dashboard() {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        title={<Space><TrophyOutlined /> 部门费用排行</Space>}
+        style={{ marginBottom: 24 }}
+        extra={<span style={{ fontSize: 12, color: '#999' }}>按已使用金额降序</span>}
+      >
+        <Row gutter={[16, 12]}>
+          {[...budgets]
+            .sort((a, b) => b.used_amount - a.used_amount)
+            .map((b, i) => (
+              <Col span={i === 0 ? 8 : 4} key={b.id}>
+                <Card
+                  size="small"
+                  style={{
+                    textAlign: 'center',
+                    background: b.usage_rate > 90 ? '#fff2f0' : i === 0 ? '#f6ffed' : '#fafafa',
+                    border: b.usage_rate > 90 ? '1px solid #ffccc7' : undefined,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                    {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`} {b.department}
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: '#1677ff' }}>
+                    ¥{(b.used_amount / 10000).toFixed(1)}<span style={{ fontSize: 12 }}>万</span>
+                  </div>
+                  <Progress
+                    percent={Math.round(b.usage_rate)}
+                    size="small"
+                    status={b.usage_rate > 90 ? 'exception' : 'normal'}
+                    style={{ marginTop: 4 }}
+                  />
+                </Card>
+              </Col>
+            ))}
+        </Row>
+      </Card>
 
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col span={12}>

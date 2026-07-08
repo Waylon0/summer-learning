@@ -1,7 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import type {
   ChatRequest, ChatResponse,
-  CreateReimbursementRequest,
   ReimbursementRecord,
   BudgetInfo,
   UploadResult,
@@ -133,11 +132,6 @@ export async function* sendChatMessageStream(data: ChatRequest) {
 
 // ========== 报销单 CRUD ==========
 
-export async function createReimbursement(data: CreateReimbursementRequest): Promise<ReimbursementRecord> {
-  const res = await api.post<ReimbursementRecord>('/reimbursements', data);
-  return res.data;
-}
-
 export async function getReimbursements(params?: {
   user_id?: string; status?: string; limit?: number;
 }): Promise<ReimbursementRecord[]> {
@@ -154,11 +148,6 @@ export async function getReimbursement(id: string): Promise<ReimbursementRecord>
 
 export async function getAllBudgets(): Promise<BudgetInfo[]> {
   const res = await api.get<BudgetInfo[]>('/budget');
-  return res.data;
-}
-
-export async function getDepartmentBudget(dept: string): Promise<BudgetInfo> {
-  const res = await api.get<BudgetInfo>(`/budget/${encodeURIComponent(dept)}`);
   return res.data;
 }
 
