@@ -13,20 +13,13 @@ app/agent/knowledge/retriever.py — 知识检索器
 =============================================================================
 """
 from loguru import logger
-from app.agent.knowledge.loader import get_chroma_client, is_available
+from app.agent.knowledge.loader import get_chroma_client, is_available, _get_embedding_function
 
 
 def semantic_search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
     """
     语义检索：基于向量相似度搜索知识库。
-
-    Args:
-        query    : 用户查询文本
-        top_k    : 返回最相关的 K 个结果
-        doc_type : 按文档类型过滤（如 "expense_policy"），空则不过滤
-
-    Returns:
-        [{"content": "...", "score": 0.92, "source": "expense_policy.md", "title": "差旅费"}, ...]
+    自动适配 embedding 模型（text2vec-chinese / MiniLM / ChromaDB built-in）。
     """
     if not is_available():
         return []
@@ -37,18 +30,28 @@ def semantic_search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict
 
     try:
         collection = client.get_collection("reimbursement_knowledge")
+        where_filter = {"doc_type": doc_type} if doc_type else None
 
-        # 构建过滤条件
-        where_filter = None
-        if doc_type:
-            where_filter = {"doc_type": doc_type}
-
-        results = collection.query(
-            query_texts=[query],
-            n_results=top_k,
-            where=where_filter,
-            include=["documents", "metadatas", "distances"],
-        )
+        # 判断是否需要用自定义 embedding 查询
+        emb_fn = _get_embedding_function()
+        if emb_fn and hasattr(emb_fn, "encode"):
+            import numpy as np
+            q_emb = emb_fn.encode([query], show_progress_bar=False)
+            if isinstance(q_emb, np.ndarray):
+                q_emb = q_emb.tolist()
+            results = collection.query(
+                query_embeddings=q_emb,
+                n_results=top_k,
+                where=where_filter,
+                include=["documents", "metadatas", "distances"],
+            )
+        else:
+            results = collection.query(
+                query_texts=[query],
+                n_results=top_k,
+                where=where_filter,
+                include=["documents", "metadatas", "distances"],
+            )
 
         if not results or not results["ids"] or not results["ids"][0]:
             return []

@@ -213,6 +213,8 @@ class ReimburseState(TypedDict):
     status: str
     reimb_id: str
     attachments: list[str]
+    user_id: str
+    user_name: str
 
 
 # =============================================================================
@@ -678,6 +680,8 @@ async def save_to_db(state: ReimburseState) -> dict:
     budget_result = state.get("budget_result") or {}
     budget_remaining = (budget_result or {}).get("after_reimbursement", 0)
     description = state.get("description") or ""
+    user_id = state.get("user_id") or "anonymous"
+    user_name = state.get("user_name") or "未知用户"
 
     logger.info(
         f"Saving to DB: dept={department} type={expense_type} "
@@ -692,6 +696,8 @@ async def save_to_db(state: ReimburseState) -> dict:
         need_special_approval=need_special,
         budget_remaining_after=budget_remaining,
         description=description,
+        user_id=user_id,
+        user_name=user_name,
     )
 
     reimb_id = result.get("reimb_id", "")

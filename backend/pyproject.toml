@@ -23,13 +23,20 @@ dependencies = [
     "reportlab>=4.2.0",
     "loguru>=0.7.0",
     "pypdf>=6.14.2",
+    # RAG 向量知识库
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+    # 认证
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
 ]
 
 [project.scripts]
 reimburse = "app.cli:main"
 
-[tool.uv]
-package = true
+# Windows 下 exe 容易被锁，改用模块调用: uv run python -m app.cli start
+# [tool.uv]
+# package = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

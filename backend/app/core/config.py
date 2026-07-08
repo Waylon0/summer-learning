@@ -58,10 +58,13 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "noreply@company.com"
 
     # ===================== 存储配置 =====================
-    STORAGE_BACKEND: str = "local"  # local | minio
+    STORAGE_BACKEND: str = "local"
     CHROMA_PERSIST_DIR: str = "./data/chroma"
     UPLOAD_DIR: str = "./data/uploads"
     LOG_LEVEL: str = "INFO"
+
+    # ===================== 安全配置 =====================
+    JWT_SECRET_KEY: str = "reimburse-agent-dev-secret-change-in-production"
 
     # ===================== Pydantic 配置 =====================
     model_config = {

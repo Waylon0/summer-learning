@@ -133,3 +133,36 @@ export interface ApprovalRequest {
   action: 'approve' | 'reject' | 'return';
   comment?: string;
 }
+
+// ---------- 用户认证 ----------
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  password: string;
+  name: string;
+  department: string;
+  email?: string;
+  role?: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  user: UserInfo;
+}
+
+export interface UserInfo {
+  id: string;
+  username: string;
+  name: string;
+  email?: string;
+  department: string;
+  role: 'employee' | 'manager' | 'admin' | 'finance';
+  is_active: boolean;
+  created_at?: string;
+}

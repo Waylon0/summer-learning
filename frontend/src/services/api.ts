@@ -9,6 +9,10 @@ import type {
   ApprovalRecord,
   HealthStatus,
   ApiError,
+  LoginRequest,
+  RegisterRequest,
+  TokenResponse,
+  UserInfo,
 } from '@/types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -19,10 +23,24 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// Token 拦截器：自动附加 Bearer token
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // 统一错误拦截: 将后端标准错误格式转为可读消息
 api.interceptors.response.use(
   (res) => res,
   (err: AxiosError<ApiError>) => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+      window.dispatchEvent(new Event('auth:logout'));
+    }
     const detail = err.response?.data;
     if (detail?.message) {
       const code = detail.error_code ? `[${detail.error_code}] ` : '';
@@ -153,5 +171,22 @@ export async function uploadInvoice(file: File): Promise<UploadResult> {
 
 export async function submitApproval(data: ApprovalRequest): Promise<ApprovalRecord> {
   const res = await api.post<ApprovalRecord>('/approval', data);
+  return res.data;
+}
+
+// ========== 用户认证 ==========
+
+export async function login(data: LoginRequest): Promise<TokenResponse> {
+  const res = await api.post<TokenResponse>('/auth/login', data);
+  return res.data;
+}
+
+export async function register(data: RegisterRequest): Promise<TokenResponse> {
+  const res = await api.post<TokenResponse>('/auth/register', data);
+  return res.data;
+}
+
+export async function getMe(): Promise<UserInfo> {
+  const res = await api.get<UserInfo>('/auth/me');
   return res.data;
 }

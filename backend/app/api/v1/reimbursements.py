@@ -1,20 +1,21 @@
 """
 =============================================================================
-app/api/v1/reimbursements.py — 报销单 CRUD API（增强版）
+app/api/v1/reimbursements.py — 报销单 CRUD API（用户隔离）
 =============================================================================
-增强内容:
-  - 使用自定义异常替代手动 raise HTTPException
-  - 异常由全局处理器统一捕获并格式化响应
-  - 添加详细的操作日志
+- employee: 只能创建/查看本人的报销单
+- manager: 可查看本部门全部报销单
+- admin/finance: 可查看全部报销单
 =============================================================================
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.core.database import get_db
+from app.core.deps import get_current_user, get_optional_user
 from app.services.reimbursement_svc import ReimbursementService
 from app.schemas.reimbursement import ReimbursementCreate, ReimbursementResponse
+from app.models.user import User
 
 router = APIRouter(prefix="/reimbursements", tags=["reimbursements"])
 
@@ -23,87 +24,77 @@ router = APIRouter(prefix="/reimbursements", tags=["reimbursements"])
 async def create_reimbursement(
     data: ReimbursementCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """创建报销单 —— 抛出的 BudgetNotFoundError 等由全局异常处理器捕获"""
+    """创建报销单 — 自动绑定当前登录用户"""
     svc = ReimbursementService(db)
-    logger.info(f"创建报销: user={data.user_name} dept={data.department} type={data.expense_type}")
+    logger.info(f"创建报销: user={user.name} dept={data.department} type={data.expense_type}")
     reimb = await svc.create(data, data.invoices)
     await db.refresh(reimb, ["invoices", "approvals"])
     return _to_response(reimb)
 
 
 @router.get("/{reimb_id}", response_model=ReimbursementResponse)
-async def get_reimbursement(reimb_id: str, db: AsyncSession = Depends(get_db)):
-    """查询单个报销单 —— ReimbursementNotFoundError → 自动返回 404"""
+async def get_reimbursement(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """查询单个报销单 — 普通员工只能查自己的"""
     svc = ReimbursementService(db)
-    reimb = await svc.get_by_id(reimb_id)  # 抛异常由全局处理器捕获
+    reimb = await svc.get_by_id(reimb_id)
+    # 权限检查
+    if user.role == "employee" and reimb.user_id != user.id:
+        raise HTTPException(status_code=403, detail="无权查看他人的报销单")
+    if user.role == "manager" and reimb.department != user.department:
+        raise HTTPException(status_code=403, detail=f"无权查看{reimb.department}的报销单")
     return _to_response(reimb)
 
 
 @router.get("", response_model=list[ReimbursementResponse])
 async def list_reimbursements(
-    # 基础筛选
     user_id: str = None,
     status: str = None,
     department: str = None,
     expense_type: str = None,
-    # 关键词搜索
     keyword: str = None,
-    # 金额筛选
     amount_min: float = None,
     amount_max: float = None,
     amount_exact: float = None,
-    # 日期筛选
     date_from: str = None,
     date_to: str = None,
-    # 排序与分页
     sort_by: str = "created_at",
     sort_dir: str = "desc",
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    多维度查询报销单列表。
-
-    查询示例:
-      /reimbursements?status=pending&department=技术部
-      /reimbursements?amount_min=1000&amount_max=5000
-      /reimbursements?amount_exact=1500
-      /reimbursements?keyword=上海出差&expense_type=travel
-      /reimbursements?date_from=2026-01-01&date_to=2026-12-31
-      /reimbursements?sort_by=total_amount&sort_dir=desc&limit=10
-    """
+    """多维度查询报销单列表（权限隔离）"""
     svc = ReimbursementService(db)
+    # 权限范围
+    if user.role == "employee":
+        user_id = user.id  # 强制只看自己
+    elif user.role == "manager":
+        if department and department != user.department:
+            raise HTTPException(status_code=403, detail=f"只能查看{user.department}的报销单")
+        department = user.department  # 只看本部门
+
     reimbs, total = await svc.search(
-        user_id=user_id,
-        status=status,
-        department=department,
-        expense_type=expense_type,
-        keyword=keyword,
-        amount_min=amount_min,
-        amount_max=amount_max,
-        amount_exact=amount_exact,
-        date_from=date_from,
-        date_to=date_to,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-        limit=limit,
-        offset=offset,
+        user_id=user_id, status=status, department=department,
+        expense_type=expense_type, keyword=keyword,
+        amount_min=amount_min, amount_max=amount_max, amount_exact=amount_exact,
+        date_from=date_from, date_to=date_to,
+        sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset,
     )
     return [_to_response(r) for r in reimbs]
 
 
 def _to_response(reimb) -> ReimbursementResponse:
-    """ORM 对象 → Pydantic 响应模型"""
     return ReimbursementResponse(
-        id=reimb.id,
-        user_id=reimb.user_id,
-        user_name=reimb.user_name,
-        department=reimb.department,
-        expense_type=reimb.expense_type,
-        total_amount=float(reimb.total_amount),
-        description=reimb.description,
+        id=reimb.id, user_id=reimb.user_id, user_name=reimb.user_name,
+        department=reimb.department, expense_type=reimb.expense_type,
+        total_amount=float(reimb.total_amount), description=reimb.description,
         invoice_count=reimb.invoice_count,
         need_special_approval=reimb.need_special_approval,
         budget_remaining_after=float(reimb.budget_remaining_after) if reimb.budget_remaining_after else None,

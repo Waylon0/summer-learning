@@ -1,16 +1,27 @@
-"""初始化数据库：建表 + 种子数据"""
+"""初始化数据库：建表 + 种子数据（含管理员用户）"""
 import asyncio
 import uuid
 from decimal import Decimal
 
 from app.core.config import get_settings
 from app.core.database import Base, engine
-from app.models import Reimbursement, Invoice, DepartmentBudget, ApprovalRecord, ExpensePolicy
+from app.core.security import hash_password
+from app.models import Reimbursement, Invoice, DepartmentBudget, ApprovalRecord, ExpensePolicy, User
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 settings = get_settings()
 
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+SEED_USERS = [
+    {"username": "admin", "password": "admin123", "name": "系统管理员", "department": "技术部", "role": "admin"},
+    {"username": "zhangsan", "password": "123456", "name": "张三", "department": "技术部", "role": "employee"},
+    {"username": "lisi", "password": "123456", "name": "李四", "department": "研发部", "role": "employee"},
+    {"username": "wangwu", "password": "123456", "name": "王五", "department": "市场部", "role": "employee"},
+    {"username": "manager_wang", "password": "123456", "name": "王总监", "department": "技术部", "role": "manager"},
+    {"username": "manager_li", "password": "123456", "name": "李总监", "department": "研发部", "role": "manager"},
+    {"username": "finance_zhao", "password": "123456", "name": "赵财务", "department": "财务部", "role": "finance"},
+]
 
 SEED_BUDGETS = [
     {"department": "研发部", "annual_budget": 500000, "used_amount": 120000, "fiscal_year": 2026},
@@ -96,7 +107,25 @@ async def main():
                 print(f"  + policy: {p['expense_type']}")
 
         await session.commit()
-    print("Seed data inserted.")
+    print("Seed data (budgets + policies) inserted.")
+
+    async with AsyncSessionLocal() as session:
+        # 预置用户（仅首次）
+        for u in SEED_USERS:
+            existing = await session.execute(
+                User.__table__.select().where(User.username == u["username"])
+            )
+            if existing.first() is None:
+                session.add(User(
+                    username=u["username"],
+                    password_hash=hash_password(u["password"]),
+                    name=u["name"],
+                    department=u["department"],
+                    role=u["role"],
+                ))
+                print(f"  + user: {u['username']} ({u['role']})")
+        await session.commit()
+    print("Seed users inserted.")
 
     await engine.dispose()
     print("Done.")
