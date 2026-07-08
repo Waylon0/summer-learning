@@ -5,6 +5,7 @@ import {
   DashboardOutlined,
   SearchOutlined,
   AuditOutlined,
+  TeamOutlined,
   LogoutOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -12,6 +13,7 @@ import ChatReimbursement from './pages/ChatReimbursement';
 import Dashboard from './pages/Dashboard';
 import StatusQuery from './pages/StatusQuery';
 import Approval from './pages/Approval';
+import UserManagement from './pages/UserManagement';
 import AuthPage from './pages/Auth';
 import { healthCheck } from './services/api';
 import { useAuthStore } from './stores';
@@ -19,32 +21,33 @@ import { useAuthStore } from './stores';
 const { Sider, Content, Header } = Layout;
 const { Title, Text } = Typography;
 
-const menuItems = [
+const baseMenuItems = [
   { key: 'chat', icon: <MessageOutlined />, label: '对话报销' },
   { key: 'dashboard', icon: <DashboardOutlined />, label: '报销看板' },
   { key: 'approval', icon: <AuditOutlined />, label: '报销审批' },
   { key: 'status', icon: <SearchOutlined />, label: '进度查询' },
 ];
 
+const adminMenuItem = { key: 'users', icon: <TeamOutlined />, label: '用户管理' };
+
 const pageMap: Record<string, React.ReactNode> = {
   chat: <ChatReimbursement />,
   dashboard: <Dashboard />,
   approval: <Approval />,
   status: <StatusQuery />,
+  users: <UserManagement />,
 };
 
 const roleDefaults: Record<string, string> = {
   employee: 'chat',
   manager: 'dashboard',
   admin: 'dashboard',
-  finance: 'dashboard',
 };
 
 const roleTitles: Record<string, string> = {
   employee: '我的工作台',
   manager: '团队报销管理',
-  admin: '企业财务总览',
-  finance: '财务审核中心',
+  admin: '管理员控制台',
 };
 
 export default function App() {
@@ -104,7 +107,7 @@ export default function App() {
             ReimburseAgent
           </Title>
           <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
-            {user.department} · {({ employee: '员工', manager: '经理', admin: '管理员', finance: '财务' })[user.role] || user.role}
+            {user.department} · {({ employee: '员工', manager: '经理', admin: '管理员' })[user.role] || user.role}
           </Text>
         </div>
         <Menu
@@ -112,7 +115,7 @@ export default function App() {
           mode="inline"
           selectedKeys={[active]}
           onClick={({ key }) => setActive(key)}
-          items={menuItems}
+          items={user.role === 'admin' ? [...baseMenuItems, adminMenuItem] : baseMenuItems}
           style={{ background: 'transparent', borderRight: 0, marginTop: 8 }}
         />
       </Sider>

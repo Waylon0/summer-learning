@@ -185,3 +185,15 @@ export async function getMe(): Promise<UserInfo> {
   const res = await api.get<UserInfo>('/auth/me');
   return res.data;
 }
+
+// ========== 管理员 ==========
+
+export async function listUsers(params?: { role?: string; department?: string }): Promise<UserInfo[]> {
+  const res = await api.get<UserInfo[]>('/admin/users', { params });
+  return res.data;
+}
+
+export async function updateUserRole(userId: string, role: string): Promise<UserInfo> {
+  const res = await api.put<UserInfo>(`/admin/users/${userId}/role`, { role });
+  return res.data;
+}

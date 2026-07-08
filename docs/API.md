@@ -628,3 +628,87 @@ curl -X POST http://localhost:8000/api/v1/approval \
 # 6. 查看部门预算
 curl http://localhost:8000/api/v1/budget/技术部
 ```
+
+---
+
+## 8. 管理员用户管理（需要 super_admin 权限）
+
+### GET /api/v1/admin/users
+
+列出所有用户，仅超级管理员可调用。
+
+**请求头**
+```
+Authorization: Bearer <token>
+```
+
+**参数**
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| role | string | 否 | 按角色过滤：employee / manager / admin |
+| department | string | 否 | 按部门过滤 |
+
+**成功响应** `200`
+```json
+[
+  {
+    "id": "uuid",
+    "username": "zhangsan",
+    "name": "张三",
+    "email": "zhangsan@example.com",
+    "department": "技术部",
+    "role": "employee",
+    "is_active": true,
+    "created_at": "2026-07-01T10:00:00"
+  }
+]
+```
+
+### PUT /api/v1/admin/users/{user_id}/role
+
+变更用户角色，仅超级管理员可调用。支持：employee → manager → admin。
+
+**请求头**
+```
+Authorization: Bearer <token>
+```
+
+**请求体**
+```json
+{
+  "role": "manager"
+}
+```
+
+**成功响应** `200`
+```json
+{
+  "id": "uuid",
+  "username": "zhangsan",
+  "name": "张三",
+  "department": "技术部",
+  "role": "manager",
+  "is_active": true
+}
+```
+
+**错误响应** `400`
+```json
+{
+  "error": true,
+  "error_code": "BUSINESS_ERROR",
+  "message": "不能将自己降级"
+}
+```
+
+---
+
+## 9. 角色体系说明
+
+| 角色 | 标识 | 权限 |
+|------|------|------|
+| 员工 | employee | 提交报销、查询自己记录 |
+| 部门经理 | manager | 审批本部门报销、查看部门预算 |
+| 超级管理员 | admin | 管理用户角色、查看全公司数据 |
+
+注册用户默认角色为 `employee`，需由超级管理员晋升为 `manager` 或 `admin`。

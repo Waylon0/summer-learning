@@ -162,7 +162,7 @@ export interface UserInfo {
   name: string;
   email?: string;
   department: string;
-  role: 'employee' | 'manager' | 'admin' | 'finance';
+  role: 'employee' | 'manager' | 'admin';
   is_active: boolean;
   created_at?: string;
 }
