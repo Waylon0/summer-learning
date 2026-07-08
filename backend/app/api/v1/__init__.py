@@ -9,5 +9,10 @@ from app.api.v1.reimbursements import router as reimb_router
 from app.api.v1.budget import router as budget_router
 from app.api.v1.upload import router as upload_router
 from app.api.v1.approval import router as approval_router
+from app.api.v1.stats import router as stats_router
+from app.api.v1.invoices import router as invoices_router
 
-__all__ = ["chat_router", "reimb_router", "budget_router", "upload_router", "approval_router"]
+__all__ = [
+    "chat_router", "reimb_router", "budget_router", "upload_router", "approval_router",
+    "stats_router", "invoices_router",
+]

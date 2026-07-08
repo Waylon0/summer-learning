@@ -39,6 +39,8 @@ from app.api.v1.upload import router as upload_router
 from app.api.v1.approval import router as approval_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
+from app.api.v1.stats import router as stats_router
+from app.api.v1.invoices import router as invoices_router
 
 settings = get_settings()
 logger = setup_logging()
@@ -220,6 +222,8 @@ app.include_router(upload_router, prefix="/api/v1")
 app.include_router(approval_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+app.include_router(stats_router, prefix="/api/v1")
+app.include_router(invoices_router, prefix="/api/v1")
 
 
 # =============================================================================

@@ -84,9 +84,15 @@ export async function sendChatMessage(data: ChatRequest): Promise<ChatResponse> 
  *   }
  */
 export async function* sendChatMessageStream(data: ChatRequest) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const response = await fetch(`${API_BASE}/chat/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(data),
   });
 
