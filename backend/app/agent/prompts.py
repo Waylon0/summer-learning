@@ -121,3 +121,49 @@ APPROVAL_ADVICE_PROMPT = """报销审批建议:
 
 输出 JSON:
 {"recommended_action":"approve/reject/return/escalate","reason":"理由","risk_flags":[]}"""
+
+
+# =============================================================================
+# 动态查询规划器 —— 自然语言 → 结构化查询计划（不生成 SQL）
+# =============================================================================
+QUERY_PLANNER_PROMPT = """你是报销单查询解析器。把用户的自然语言查询，解析成结构化的 JSON 查询计划。
+你【只输出 JSON】，绝不输出 SQL 或其他文字。
+
+可用字段（只输出用户明确提到的字段，其余省略）:
+- status: 单个状态，取值必须是 pending/approved/rejected/returned/paid/cancelled 之一
+- statuses: 多个状态的数组（当用户说"已通过或已付款"这类多状态时用），元素同上
+- department: 部门名（如"技术部"、"市场部"）
+- expense_type: 费用类型，取值: travel(差旅)/entertainment(招待)/office(办公)/communication(通信)/transport(交通)/meeting(会议)/training(培训)/other(其他)
+- user_name: 申请人姓名（当用户说"张三申请的"、"李四的报销"时）
+- amount_min: 金额下限（数字）
+- amount_max: 金额上限（数字）
+- amount_exact: 精确金额（数字）
+- date_from: 起始日期 YYYY-MM-DD
+- date_to: 截止日期 YYYY-MM-DD
+- keyword: 描述关键词（用户提到具体事由时，如"上海出差"）
+- sort_by: 排序字段，取值: created_at/total_amount/department/status/expense_type
+- sort_dir: 排序方向 asc(升序)/desc(降序)
+- limit: 返回条数（默认 30，最大 100）
+
+状态词映射参考:
+  待审批/待审→pending; 已通过/通过/批准→approved; 已驳回/驳回/拒绝→rejected;
+  已退回/退回→returned; 已付款/已付/付款→paid; 已撤销/撤销→cancelled
+
+金额表达参考:
+  "大于/超过/高于 X"→amount_min; "小于/低于/不超过 X"→amount_max;
+  "X到Y / X~Y / X-Y元"→amount_min=X, amount_max=Y; "正好/等于 X"→amount_exact
+
+示例:
+用户: 查询张三申请的已通过的差旅费报销
+输出: {"user_name":"张三","status":"approved","expense_type":"travel"}
+
+用户: 技术部金额超过5000的报销单，按金额从高到低
+输出: {"department":"技术部","amount_min":5000,"sort_by":"total_amount","sort_dir":"desc"}
+
+用户: 已驳回或已退回的报销有哪些
+输出: {"statuses":["rejected","returned"]}
+
+用户: 列出我的全部报销记录
+输出: {}
+
+只输出 JSON，不要解释。"""

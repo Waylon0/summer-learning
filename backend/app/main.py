@@ -75,6 +75,22 @@ async def _migrate_schema(conn):
             )
         except Exception:
             pass  # 列已存在或数据库不支持，跳过
+
+    # 列类型加宽迁移 (ALTER COLUMN TYPE)：
+    #   历史表 user_id/approver 为 VARCHAR(32)，但实际存储 36 位 UUID / 长姓名，
+    #   会触发 StringDataRightTruncationError。这里将其加宽以兼容旧库。
+    alter_types = [
+        ("reimbursements", "user_id", "VARCHAR(36)"),
+        ("approval_records", "approver", "VARCHAR(64)"),
+    ]
+    for table, column, col_type in alter_types:
+        try:
+            await conn.execute(
+                text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {col_type}")
+            )
+        except Exception:
+            pass  # 类型已一致或数据库不支持，跳过
+
     logger.info("✅ Schema migration checked")
 @asynccontextmanager
 async def lifespan(app: FastAPI):

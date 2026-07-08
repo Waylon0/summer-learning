@@ -5,7 +5,7 @@
 
 CREATE TABLE IF NOT EXISTS reimbursements (
     id                      VARCHAR(36) PRIMARY KEY,
-    user_id                 VARCHAR(32) NOT NULL,
+    user_id                 VARCHAR(36) NOT NULL,
     user_name               VARCHAR(64) NOT NULL,
     department              VARCHAR(64) NOT NULL,
     expense_type            VARCHAR(32) NOT NULL,
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS department_budget (
 CREATE TABLE IF NOT EXISTS approval_records (
     id                 VARCHAR(36) PRIMARY KEY,
     reimbursement_id   VARCHAR(36) NOT NULL REFERENCES reimbursements(id),
-    approver           VARCHAR(32) NOT NULL,
+    approver           VARCHAR(64) NOT NULL,
     step               INTEGER NOT NULL,
     action             VARCHAR(16) NOT NULL,
     comment            TEXT,

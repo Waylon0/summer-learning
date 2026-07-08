@@ -237,14 +237,26 @@ def get_session_store() -> SessionStore:
 def infer_intent_from_context(current_text: str, ctx: SessionContext) -> dict | None:
     if not ctx.is_filling_slots():
         return None
-    text_lower = current_text.lower().strip()
+    text = current_text.strip()
+    text_lower = text.lower()
+
+    # --- 明确的话题切换 → 交回主流程重新分类，不当作槽位补充 ---
+    topic_switch = ["查询", "进度", "状态", "标准", "政策", "流程", "帮助",
+                    "你好", "取消", "算了", "不报了", "重新"]
+    if any(k in text_lower for k in topic_switch):
+        return None
+
+    # --- 确认词（如"是的""好的"）→ 沿用上轮意图并确认 ---
     confirm_words = ["是的", "对", "确认", "好的", "可以", "行", "没错", "嗯", "ok", "yes", "好"]
     if any(text_lower == w or text_lower.startswith(w) for w in confirm_words):
-        return {"primary": ctx.last_intent, "sub": ctx.last_sub_intent, "confidence": 0.9, "contextual": True, "action": "confirm"}
-    is_short = len(current_text) < 30
-    has_slot = any(k in current_text for k in ["部", "元", "¥", "￥", "万", "千", "百", "差旅", "招待", "办公"])
-    if is_short and has_slot:
-        return {"primary": ctx.last_intent, "sub": ctx.last_sub_intent, "confidence": 0.85, "contextual": True, "action": "fill_slots"}
-    if any(k in text_lower for k in ["查询", "进度", "状态", "标准", "政策", "流程"]):
-        return None
+        return {"primary": ctx.last_intent, "sub": ctx.last_sub_intent,
+                "confidence": 0.9, "contextual": True, "action": "confirm"}
+
+    # --- 正在等待用户补充缺失槽位：短回复默认视为对上一问的补充 ---
+    # 例如 Agent 问"目的地是哪里？"，用户回复"北京"/"3人"/"华为公司"等，
+    # 这类回复往往不含报销关键词，但确实是在回答问题。
+    if len(text) <= 30:
+        return {"primary": ctx.last_intent, "sub": ctx.last_sub_intent,
+                "confidence": 0.85, "contextual": True, "action": "fill_slots"}
+
     return None

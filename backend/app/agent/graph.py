@@ -221,6 +221,8 @@ class ReimburseState(TypedDict):
     attachments: list[str]
     user_id: str
     user_name: str
+    user_role: str
+    user_department: str
 
 
 # =============================================================================
@@ -252,11 +254,14 @@ async def classify_intent(state: ReimburseState) -> dict:
         contextual_intent = infer_intent_from_context(last_msg, ctx)
         if contextual_intent and contextual_intent.get("action") == "fill_slots":
             logger.info(f"Contextual slot-filling detected: '{last_msg}' continues intent={contextual_intent['primary']}")
-            # 继承上一轮意图
+            # 继承上一轮意图；把待补充的槽位作为 required_slots 传下去，
+            # 便于 entity_extraction 重新校验（补齐则放行，仍缺则再次追问）。
+            contextual_result = dict(contextual_intent)
+            contextual_result["required_slots"] = list(ctx.missing_slots)
             return {
                 "intent": contextual_intent["primary"],
                 "sub_intent": contextual_intent.get("sub", "none"),
-                "intent_result": contextual_intent,
+                "intent_result": contextual_result,
                 "department": ctx.department,
                 "expense_type": ctx.expense_type,
                 "total_amount": ctx.total_amount,
@@ -567,6 +572,8 @@ async def ocr_invoice(state: ReimburseState) -> dict:
     """OCR 识别上传的发票文件，支持多张发票分别识别并汇总金额"""
     attachments = state.get("attachments") or []
     if not attachments:
+        # 无附件是正常场景（用户口述金额报销），仅记录日志，不向用户发独立提示，
+        # 避免流式模式下这条中间消息干扰最终的报销结果摘要。
         logger.info("🔍 No attachments — using user-provided amount")
         invoices = [{
             "invoice_code": "", "invoice_number": "", "invoice_date": "", "invoice_type": "",
@@ -577,10 +584,7 @@ async def ocr_invoice(state: ReimburseState) -> dict:
             "items": [],
             "remarks": "", "payee": "", "reviewer": "", "drawer": "",
         }]
-        return {
-            "invoices": invoices,
-            "messages": [AIMessage(content="ℹ️ 未检测到上传票据，将按您提供的金额提交。")],
-        }
+        return {"invoices": invoices}
 
     logger.info(f"🔍 OCR processing {len(attachments)} attachment(s)...")
     invoices = []
@@ -596,6 +600,7 @@ async def ocr_invoice(state: ReimburseState) -> dict:
             logger.warning(f"OCR failed for {file_path}: {e}")
 
     if not invoices:
+        logger.warning(f"OCR produced no valid invoice from {len(attachments)} file(s) — falling back to user amount")
         invoices = [{
             "invoice_code": "", "invoice_number": "", "invoice_date": "", "invoice_type": "",
             "buyer_name": "中国石油华东分公司", "buyer_tax_id": "91310000710913000J",
@@ -605,9 +610,12 @@ async def ocr_invoice(state: ReimburseState) -> dict:
             "items": [],
             "remarks": "", "payee": "", "reviewer": "", "drawer": "",
         }]
-    else:
-        logger.info(f"OCR complete: {len(invoices)} invoice(s), total=¥{total_ocr:,.2f}")
+        return {
+            "invoices": invoices,
+            "messages": [AIMessage(content="⚠️ 上传的票据未能成功识别，将按您提供的金额提交。")],
+        }
 
+    logger.info(f"OCR complete: {len(invoices)} invoice(s), total=¥{total_ocr:,.2f}")
     return {
         "invoices": invoices,
         "messages": [AIMessage(
@@ -848,10 +856,13 @@ async def generate_pdf(state: ReimburseState) -> dict:
 
 
 async def send_email(state: ReimburseState) -> dict:
-    """发送审批邮件"""
+    """发送审批邮件，并返回一条完整的报销结果摘要作为最终答复。"""
     reimb_id = state.get("reimb_id", state.get("session_id", "unknown"))
     total = state.get("total_amount", 0)
     pdf_path = state.get("pdf_path", "")
+    department = state.get("department", "") or "—"
+    expense_type = state.get("expense_type", "") or "other"
+    need_special = state.get("need_special_approval", False)
 
     result = await send_approval_email(
         to_email="approver@company.com",
@@ -860,115 +871,165 @@ async def send_email(state: ReimburseState) -> dict:
         pdf_path=pdf_path,
     )
 
-    return {"messages": [AIMessage(
-        content=f"📧 报销单已提交审批！\n审批流程: 部门经理 → 财务审核 → 出纳付款\n请前往「进度查询」追踪状态。"
-    )]}
+    # 费用类型中文标签（未知类型回退为原始值）
+    type_labels = {
+        "travel": "差旅费", "entertainment": "招待费", "office": "办公用品",
+        "communication": "通信费", "transport": "市内交通费", "meeting": "会议费",
+        "training": "培训费", "other": "其他费用",
+        "rd_materials": "研发材料费", "rd_equipment": "研发设备费",
+        "tech_acquisition": "技术引进费", "software_license": "软件许可费",
+        "advertisement": "广告推广费", "exhibition": "展会费",
+        "client_maintenance": "客户维护费", "audit": "审计服务费",
+        "recruitment": "招聘费", "renovation": "装修费", "cloud_service": "云服务费",
+    }
+    type_cn = type_labels.get(expense_type, expense_type)
+
+    approval_note = (
+        "审批流程: 部门经理 → 财务总监特批 → 出纳付款（⚠️ 预算超标，已转特殊审批）"
+        if need_special
+        else "审批流程: 部门经理 → 财务审核 → 出纳付款"
+    )
+
+    summary = (
+        f"📧 报销单已提交审批！\n"
+        f"• 报销单号: {reimb_id}\n"
+        f"• 部门: {department}\n"
+        f"• 费用类型: {type_cn}\n"
+        f"• 报销金额: ¥{total:,.2f}\n"
+        f"{approval_note}\n"
+        f"请前往「进度查询」追踪状态。"
+    )
+
+    return {"messages": [AIMessage(content=summary)]}
 
 
 async def query_status(state: ReimburseState) -> dict:
-    """查询审批进度 — 智能判断单条查询 vs 列表查询"""
-    reimb_id = state.get("reimb_id", "")
+    """
+    查询报销单 —— 动态查询规划器版（安全 + 权限）。
+
+    路径:
+      A. 用户提供了报销单号 → 查单条详情（含权限校验，不可越权看他人）
+      B. 否则 → LLM 把自然语言解析成结构化查询计划，
+         经安全清洗 + 强制权限过滤后，参数化执行 SELECT。
+
+    安全保证:
+      - 绝不执行 LLM 生成的 SQL；LLM 只产出结构化 JSON 计划。
+      - 所有条件白名单校验 + ORM 参数化，免疫注入。
+      - 权限在代码层强制注入：员工只看本人、经理只看本部门、管理员/财务全局。
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.agent.query_planner import (
+        sanitize_plan, rule_extract_plan, extract_plan_with_llm,
+        execute_plan, apply_permission_scope, QueryPlan,
+        STATUS_LABELS, TYPE_LABELS,
+    )
+
     entities = state.get("entities", {})
-    sub_intent = state.get("sub_intent", "status_check")
     messages_list = state.get("messages", [])
     last_msg = messages_list[-1].content if messages_list else ""
 
+    user_id = state.get("user_id", "")
+    user_role = state.get("user_role", "")
+    user_department = state.get("user_department", "")
+
+    reimb_id = state.get("reimb_id", "")
     if not reimb_id and entities:
         reimb_id = entities.get("reimbursement_id", "")
     if not reimb_id:
         from app.agent.entities import _extract_uuid
         reimb_id = _extract_uuid(last_msg)
 
-    # --- 路径 A：有具体报销单号 → 单条查询 ---
+    # --- 路径 A：具体报销单号 → 单条查询（带权限校验）---
     if reimb_id:
-        logger.info(f"Query single status for reimb_id={reimb_id}")
+        logger.info(f"Query single status for reimb_id={reimb_id} role={user_role}")
         from app.agent.tools.reimburse_tools import query_reimbursement_status as _qstatus
         result = await _qstatus(reimb_id=reimb_id)
-        steps = result.get("steps", [])
-        status_map = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
-        status_cn = status_map.get(result.get("status", "pending"), "未知")
 
+        if result.get("status") in ("not_found", "unknown"):
+            return {"messages": [AIMessage(content=f"📋 未找到报销单 {reimb_id}。")]}
+
+        # 权限校验：员工只能看自己、经理只能看本部门
+        role = (user_role or "").lower()
+        owner_dept = result.get("department", "")
+        owner_uid = result.get("user_id", "")
+        if role == "employee":
+            # 单条查询工具未返回 user_id 时，用 DB 再确认归属
+            if owner_uid and owner_uid != user_id:
+                return {"messages": [AIMessage(content="⛔ 您只能查询本人的报销单。")]}
+            if not owner_uid:
+                async with AsyncSessionLocal() as _db:
+                    from app.models.reimbursement import Reimbursement as _R
+                    _r = await _db.get(_R, reimb_id)
+                    if _r and _r.user_id != user_id:
+                        return {"messages": [AIMessage(content="⛔ 您只能查询本人的报销单。")]}
+        elif role == "manager":
+            if owner_dept and owner_dept != user_department:
+                return {"messages": [AIMessage(content=f"⛔ 您只能查询本部门（{user_department}）的报销单。")]}
+        elif role not in ("admin", "finance"):
+            return {"messages": [AIMessage(content="⛔ 您尚未登录，无法查询报销单。")]}
+
+        steps = result.get("steps", [])
+        status_cn = STATUS_LABELS.get(result.get("status", "pending"), "未知")
+        type_cn = TYPE_LABELS.get(result.get("expense_type", ""), result.get("expense_type", ""))
         if steps:
-            text = "\n".join(
-                f"  {s['step']}. {s['approver']} — {s['action']}"
-                for s in steps
+            steps_text = "\n".join(
+                f"  {s['step']}. {s['approver']} — {s['action']}" for s in steps
             )
         else:
-            text = "  暂无审批记录"
-
+            steps_text = "  暂无审批记录"
         return {"messages": [AIMessage(
-            content=f"📋 报销单 {reimb_id}\n状态: {status_cn}\n审批流程:\n{text}"
+            content=(
+                f"📋 报销单 {reimb_id}\n"
+                f"部门: {result.get('department','')}  类型: {type_cn}\n"
+                f"金额: ¥{result.get('total_amount',0):,.2f}\n"
+                f"状态: {status_cn}\n审批流程:\n{steps_text}"
+            )
         )]}
 
-    # --- 路径 B：无报销单号 → 多维度列表查询 ---
-    logger.info(f"No reimb_id provided, doing multi-dimension search")
+    # --- 路径 B：无报销单号 → 动态查询规划 ---
+    # 1) LLM 解析查询计划（失败 → 规则兜底）
+    raw_plan = await extract_plan_with_llm(last_msg, _try_llm_async)
+    if raw_plan is None:
+        raw_plan = rule_extract_plan(last_msg)
+        logger.info(f"[QueryPlanner] rule fallback plan: {raw_plan}")
+    else:
+        logger.info(f"[QueryPlanner] LLM plan: {raw_plan}")
 
-    # 从用户消息中抽取筛选条件
-    status_filter = ""
-    status_keywords = {
-        "待审批": "pending", "待审": "pending",
-        "已通过": "approved", "通过": "approved",
-        "已驳回": "rejected", "驳回": "rejected",
-        "已退回": "returned", "退回": "returned",
-        "已付款": "paid", "已付": "paid", "付款": "paid",
-    }
-    for kw, val in status_keywords.items():
-        if kw in last_msg:
-            status_filter = val
-            break
+    # 合并 entity_extraction 已识别到的实体（作为补充，不覆盖 LLM 明确结果）
+    if entities.get("expense_type") and "expense_type" not in raw_plan:
+        raw_plan["expense_type"] = entities["expense_type"]
 
-    # 从实体中提取部门/类型筛选
-    dept_filter = entities.get("department", "")
-    type_filter = entities.get("expense_type", "")
+    plan = sanitize_plan(raw_plan)
 
-    # 从消息中提取金额筛选
-    from app.agent.entities import _extract_amount as _ext_amt
-    has_money_kw = any(k in last_msg for k in ["元", "¥", "￥"])
-    amt_exact = _ext_amt(last_msg) if has_money_kw else None
-    amt_min = None
-    amt_max = None
-    range_match = re.search(r'(?:大于|超过|>=|>)\s*(\d[\d,]*)', last_msg)
-    if range_match:
-        amt_min = float(range_match.group(1).replace(",", ""))
-    range_match = re.search(r'(?:小于|低于|<=|<|不超过)\s*(\d[\d,]*)', last_msg)
-    if range_match:
-        amt_max = float(range_match.group(1).replace(",", ""))
+    # 2) 安全执行（强制权限过滤）
+    async with AsyncSessionLocal() as db:
+        records, total, notice = await execute_plan(
+            db, plan, user_id=user_id, user_role=user_role, user_department=user_department,
+        )
 
-    from app.agent.tools.reimburse_tools import query_reimbursement_status as _qsearch
-    result = await _qsearch(
-        status=status_filter,
-        department=dept_filter,
-        expense_type=type_filter,
-        amount_min=amt_min,
-        amount_max=amt_max,
-        amount_exact=amt_exact,
-        keyword=entities.get("description", "") or "",
-        limit=30,
-    )
-
-    records = result.get("results", [])
+    # 3) 组织回复
+    prefix = f"ℹ️ {notice}\n\n" if notice else ""
     if not records:
-        # 可能是按 ID 查询无结果的回退
-        filters_used = [f for f in [status_filter, dept_filter, type_filter] if f]
-        hint = f"（筛选条件: {', '.join(filters_used)}）" if filters_used else ""
         return {"messages": [AIMessage(
-            content=f"📋 未找到符合条件的报销记录{hint}。\n\n可以说 \"我的报销记录\" 查看全部，或提供具体筛选条件。"
+            content=(
+                f"{prefix}📋 未找到符合条件的报销记录。\n"
+                f"筛选条件: {plan.to_summary()}\n\n"
+                f"可以换个条件，或说\"我的全部报销\"查看所有。"
+            )
         )]}
 
-    status_labels = {"pending": "待审批", "approved": "已通过", "rejected": "已驳回", "returned": "已退回", "paid": "已付款"}
-    dept_map = {"travel": "差旅", "entertainment": "招待", "office": "办公", "other": "其他"}
-    lines = [f"📋 找到 {len(records)} 条报销记录:\n"]
+    lines = [f"{prefix}📋 找到 {total} 条报销记录（筛选: {plan.to_summary()}）:\n"]
     for r in records[:15]:
-        s = status_labels.get(r["status"], r["status"])
-        t = dept_map.get(r.get("expense_type", ""), r.get("expense_type", ""))
+        s = STATUS_LABELS.get(r["status"], r["status"])
+        t = TYPE_LABELS.get(r.get("expense_type", ""), r.get("expense_type", ""))
         id_short = r["reimb_id"][:8] if r.get("reimb_id") else "?"
         lines.append(
-            f"  [{s}] {t} ¥{r.get('total_amount', 0):,.2f} — {r.get('description', '')[:20]} "
-            f"(#{id_short} {r.get('user_name', '')})"
+            f"  [{s}] {t} ¥{r.get('total_amount', 0):,.2f} — "
+            f"{r.get('description', '')[:20]} (#{id_short} {r.get('user_name', '')})"
         )
-    if len(records) > 15:
-        lines.append(f"  ... 还有 {len(records) - 15} 条，请输入更精确的筛选条件")
-    lines.append(f"\n输入 \"查询 {records[0]['reimb_id'][:8] if records else ''}\" 查看单条详情")
+    if total > 15:
+        lines.append(f"  ... 还有 {total - 15} 条，请缩小筛选范围或指定排序")
+    lines.append(f"\n输入 \"查询 {records[0]['reimb_id'][:8]}\" 查看单条详情")
 
     return {"messages": [AIMessage(content="\n".join(lines))]}
 

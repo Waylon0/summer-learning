@@ -6,6 +6,7 @@ app/api/v1/admin.py — 超级管理员用户管理 API
 =============================================================================
 """
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -15,6 +16,11 @@ from app.core.deps import get_current_user, require_role
 from app.models.user import User
 
 router = APIRouter(prefix="/admin/users", tags=["admin"])
+
+
+class RoleUpdateRequest(BaseModel):
+    """变更用户角色请求体"""
+    role: str = Field(..., description="目标角色: employee / manager / admin")
 
 
 @router.get("")
@@ -28,21 +34,22 @@ async def list_users(
     return [u.to_dict() for u in users]
 
 
-@router.put("/{user_id}/promote")
-async def promote_user(
+@router.put("/{user_id}/role")
+async def update_user_role(
     user_id: str,
-    role: str,
+    data: RoleUpdateRequest,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_role("admin")),
 ):
     """
-    晋升用户角色（仅超管）。
+    变更用户角色（仅超管）。
 
-    role 可选: manager / admin
+    role 可选: employee / manager / admin（支持升级与降级）。
+    返回更新后的用户信息（UserInfo）。
     """
-    valid_roles = {"manager", "admin"}
-    if role not in valid_roles:
-        raise HTTPException(status_code=400, detail=f"无效目标角色: {role}，可选: {valid_roles}")
+    valid_roles = {"employee", "manager", "admin"}
+    if data.role not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"无效目标角色: {data.role}，可选: {sorted(valid_roles)}")
 
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="不能修改自己的角色")
@@ -52,11 +59,12 @@ async def promote_user(
         raise HTTPException(status_code=404, detail="用户不存在")
 
     old_role = user.role
-    user.role = role
+    user.role = data.role
     await db.commit()
+    await db.refresh(user)
 
-    logger.info(f"用户晋升: {user.username} {old_role}→{role} by {admin.username}")
-    return {"user_id": user_id, "username": user.username, "old_role": old_role, "new_role": role, "message": f"已晋升为{role}"}
+    logger.info(f"用户角色变更: {user.username} {old_role}→{data.role} by {admin.username}")
+    return user.to_dict()
 
 
 @router.put("/{user_id}/deactivate")

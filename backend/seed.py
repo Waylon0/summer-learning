@@ -24,6 +24,7 @@ SEED_USERS = [
 ]
 
 SEED_BUDGETS = [
+    {"department": "技术部", "annual_budget": 600000, "used_amount": 160000, "fiscal_year": 2026},
     {"department": "研发部", "annual_budget": 500000, "used_amount": 120000, "fiscal_year": 2026},
     {"department": "市场部", "annual_budget": 300000, "used_amount": 85000, "fiscal_year": 2026},
     {"department": "销售部", "annual_budget": 400000, "used_amount": 220000, "fiscal_year": 2026},

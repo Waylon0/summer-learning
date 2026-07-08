@@ -36,7 +36,7 @@ class Reimbursement(Base):
         String(36), primary_key=True,               # 主键（唯一标识）
         default=lambda: str(uuid.uuid4())           # 自动生成随机 UUID
     )
-    user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)   # 申请人ID（加索引方便查询）
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)   # 申请人ID（UUID，36位；加索引方便查询）
     user_name: Mapped[str] = mapped_column(String(64), nullable=False)             # 申请人姓名
     department: Mapped[str] = mapped_column(String(64), nullable=False, index=True) # 申请部门
 
@@ -183,7 +183,7 @@ class ApprovalRecord(Base):
         String(36), ForeignKey("reimbursements.id"),
         nullable=False, index=True
     )
-    approver: Mapped[str] = mapped_column(String(32), nullable=False)    # 审批人
+    approver: Mapped[str] = mapped_column(String(64), nullable=False)    # 审批人（姓名，最长64）
     step: Mapped[int] = mapped_column(Integer, nullable=False)            # 审批步骤（1, 2, 3...）
     action: Mapped[str] = mapped_column(String(16), nullable=False)      # 审批动作：approve/reject/return
     comment: Mapped[str] = mapped_column(Text, nullable=True)            # 审批意见

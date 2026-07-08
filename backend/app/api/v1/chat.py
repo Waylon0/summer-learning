@@ -58,6 +58,8 @@ def _build_initial_state(request: ChatRequest, ctx: SessionContext, is_contextua
         "attachments": request.attachments or [],
         "user_id": user.id if user else "",
         "user_name": user.name if user else "",
+        "user_role": user.role if user else "",
+        "user_department": user.department if user else "",
     }
 
 
@@ -74,8 +76,16 @@ def _save_context(session_id: str, result: dict, user_msg: str, reply: str):
         ctx.expense_type = result["expense_type"]
     if result.get("total_amount", 0) > 0:
         ctx.total_amount = result["total_amount"]
+
+    # 记住本轮仍缺失的必要槽位：下一轮用户的回复将被视为对这些槽位的补充。
     missing = result.get("missing_slots", [])
-    if not missing and ctx.awaiting_response:
+    if missing:
+        # Agent 主动追问了缺失信息 → 进入"等待补充"状态
+        ctx.missing_slots = missing
+        ctx.awaiting_response = True
+        ctx.last_agent_question = reply
+    elif ctx.awaiting_response:
+        # 槽位已补全 → 退出"等待补充"状态
         ctx.awaiting_response = False
         ctx.missing_slots = []
         ctx.last_agent_question = ""

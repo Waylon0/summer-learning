@@ -13,6 +13,8 @@
 5. [部门预算](#4-部门预算)
 6. [文件上传](#5-文件上传)
 7. [审批操作](#6-审批操作)
+8. [费用统计](#7-费用统计)
+9. [发票台账](#8-发票台账)
 
 ---
 
@@ -597,6 +599,149 @@ const data = await response.json();
 |--------|-----------|------|
 | 404 | `NOT_FOUND` | 报销单不存在 |
 | 400 | `INVALID_APPROVAL_ACTION` | action 值无效（不是 approve/reject/return） |
+
+---
+
+## 7. 费用统计
+
+> 以下接口均需登录（Bearer Token）。员工仅能查看本人/本部门数据，经理限本部门，管理员/财务可查看全部。
+
+### GET /api/v1/stats/trend
+
+近 N 个月费用趋势，按费用类型分色（Dashboard 折线图）。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| months | int | 否 | 6 | 近几个月（1~24） |
+| department | string | 否 | — | 按部门筛选（员工/经理自动限定本部门） |
+
+**成功响应** `200`
+```json
+{
+  "months": ["2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"],
+  "series": [
+    { "expense_type": "travel", "label": "差旅费", "data": [12000, 15000, 8000, 18000, 14000, 16000] },
+    { "expense_type": "entertainment", "label": "招待费", "data": [5000, 7000, 6000, 4000, 8000, 3000] },
+    { "expense_type": "office", "label": "办公用品", "data": [2000, 3000, 2500, 3500, 2000, 4000] },
+    { "expense_type": "other", "label": "其他", "data": [1000, 1500, 800, 2000, 1200, 900] }
+  ]
+}
+```
+
+> 仅统计 `approved` / `pending` / `paid` 状态；非 travel/entertainment/office 的类型归入 `other`。
+
+---
+
+### GET /api/v1/stats/personal
+
+当前用户报销统计（对话页 / Dashboard 个人卡片）。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| user_id | string | 否 | 当前用户 | 用户 ID（员工只能查本人） |
+| month | string | 否 | 当前月 | YYYY-MM |
+
+**成功响应** `200`
+```json
+{
+  "user_name": "张三",
+  "current_month": { "count": 3, "total": 4500.00 },
+  "last_month": { "count": 2, "total": 3200.00 },
+  "status_breakdown": { "pending": 1, "approved": 2, "rejected": 0 }
+}
+```
+
+> `status_breakdown.approved` 含 `paid`（已付款）。
+
+---
+
+### GET /api/v1/stats/department-ranking
+
+部门费用排行（Dashboard）。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| period | string | 否 | year | month / quarter / year |
+
+**成功响应** `200`
+```json
+{
+  "rankings": [
+    { "department": "技术部", "total": 185000, "budget": 500000, "usage_rate": 37.0 },
+    { "department": "销售部", "total": 152000, "budget": 400000, "usage_rate": 38.0 }
+  ]
+}
+```
+
+> 按 `total` 降序。`usage_rate` = total / budget × 100。
+
+---
+
+### GET /api/v1/stats/summary
+
+Dashboard 顶部汇总卡片。
+
+**成功响应** `200`
+```json
+{
+  "annual_budget_total": 1850000,
+  "used_total": 720000,
+  "remaining_total": 1130000,
+  "pending_count": 5,
+  "pending_amount": 23500,
+  "this_month_total": 85000,
+  "last_month_total": 92000
+}
+```
+
+---
+
+## 8. 发票台账
+
+### GET /api/v1/invoices
+
+发票台账列表页（多维度筛选 + 分页）。需登录，员工仅本人、经理限本部门。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| page | int | 否 | 1 | 页码 |
+| page_size | int | 否 | 20 | 每页条数（≤200） |
+| date_from | string | 否 | — | 开票日期起 YYYY-MM-DD |
+| date_to | string | 否 | — | 开票日期止 YYYY-MM-DD |
+| amount_min | float | 否 | — | 金额下限 |
+| amount_max | float | 否 | — | 金额上限 |
+| expense_type | string | 否 | — | travel/entertainment/office/other |
+| seller_name | string | 否 | — | 模糊搜索销售方 |
+| keyword | string | 否 | — | 模糊搜索发票代码/号码 |
+
+**成功响应** `200`
+```json
+{
+  "total": 156,
+  "items": [
+    {
+      "id": "xxx",
+      "invoice_code": "044001900111",
+      "invoice_number": "87654321",
+      "amount": 1500.00,
+      "invoice_date": "2026-06-15",
+      "seller_name": "北京某某科技有限公司",
+      "buyer_name": "中国石油华东分公司",
+      "expense_type": "office",
+      "reimbursement_id": "a1b2c3d4e5f6",
+      "file_path": "uploads/invoice_001.pdf"
+    }
+  ]
+}
+```
 
 ---
 
