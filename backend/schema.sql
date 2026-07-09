@@ -1,7 +1,23 @@
 -- ============================================================================
 -- ReimburseAgent — 数据库 Schema (PostgreSQL)
 -- ============================================================================
--- 5 张核心表: reimbursements / invoices / department_budget / approval_records / expense_policy
+-- 6 张核心表: users / reimbursements / invoices / department_budget
+--            / approval_records / expense_policy
+
+CREATE TABLE IF NOT EXISTS users (
+    id              VARCHAR(36) PRIMARY KEY,
+    username        VARCHAR(64) NOT NULL UNIQUE,
+    password_hash   VARCHAR(256) NOT NULL,
+    name            VARCHAR(64) NOT NULL,
+    email           VARCHAR(128),
+    department      VARCHAR(64) NOT NULL,
+    role            VARCHAR(16) NOT NULL DEFAULT 'employee',
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_users_username ON users (username);
+CREATE INDEX IF NOT EXISTS ix_users_department ON users (department);
 
 CREATE TABLE IF NOT EXISTS reimbursements (
     id                      VARCHAR(36) PRIMARY KEY,

@@ -8,12 +8,14 @@ app/api/v1/upload.py — 文件上传 API
 import os
 import re
 
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Depends
 from loguru import logger
 
 from app.core.config import get_settings
+from app.core.deps import get_current_user
 from app.core.exceptions import FileValidationError, StorageServiceError
 from app.services.ocr_svc import upload_file as upload_to_storage
+from app.models.user import User
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -51,8 +53,11 @@ def _sanitize_filename(filename: str) -> str:
 
 
 @router.post("")
-async def upload_invoice(file: UploadFile = File(..., max_length=MAX_FILE_SIZE)):
-    """上传发票/票据文件"""
+async def upload_invoice(
+    file: UploadFile = File(..., max_length=MAX_FILE_SIZE),
+    user: User = Depends(get_current_user),
+):
+    """上传发票/票据文件（需登录）"""
     safe_filename = _sanitize_filename(file.filename or "invoice.pdf")
 
     # --- 步骤1：扩展名校验 ---
@@ -86,7 +91,7 @@ async def upload_invoice(file: UploadFile = File(..., max_length=MAX_FILE_SIZE))
         logger.error(f"文件上传失败: {e}")
         raise StorageServiceError(detail=str(e))
 
-    logger.info(f"文件上传成功: {safe_filename} → {object_name} ({len(content)} bytes)")
+    logger.info(f"文件上传成功: {safe_filename} → {object_name} ({len(content)} bytes) by {user.username}")
 
     return {
         "filename": safe_filename,

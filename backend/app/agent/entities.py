@@ -280,12 +280,26 @@ def _extract_date(text: str) -> str:
 
 
 def _extract_uuid(text: str) -> str:
-    """提取 UUID 格式的报销单号"""
+    """
+    提取报销单号。
+
+    支持两种格式:
+      1. 标准 UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+      2. 短十六进制单号: 系统实际使用 uuid4().hex[:12]（12 位十六进制），
+         也兼容 8~32 位纯十六进制 token。
+    """
+    # 1) 完整 UUID
     match = re.search(
         r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
         text,
     )
-    return match.group(0) if match else ""
+    if match:
+        return match.group(0)
+    # 2) 短十六进制单号（作为独立 token 出现，长度 8~32，且必须含字母以避免误吞纯数字金额）
+    for token in re.findall(r"\b[0-9a-fA-F]{8,32}\b", text):
+        if any(c in "abcdefABCDEF" for c in token):
+            return token
+    return ""
 
 
 def _extract_guest_count(text: str) -> int:

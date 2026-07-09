@@ -8,6 +8,7 @@ app/core/security.py — JWT 认证 + 密码哈希
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
+from loguru import logger
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -15,6 +16,13 @@ settings = get_settings()
 SECRET_KEY = settings.JWT_SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+
+# 使用不安全的开发占位密钥时告警（提醒生产环境务必通过环境变量配置）
+if "INSECURE" in SECRET_KEY:
+    logger.warning(
+        "⚠️  JWT_SECRET_KEY 未配置，正在使用不安全的开发占位密钥！"
+        "请在 .env 或环境变量中设置 JWT_SECRET_KEY 后再部署到生产环境。"
+    )
 
 
 def hash_password(password: str) -> str:
