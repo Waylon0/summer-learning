@@ -515,14 +515,27 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
         c.line(col1_x, y, W - margin - 5 * mm, y)
         y -= row_h
 
-    expense_type_map = {"travel": "差旅费", "entertainment": "招待费", "office": "办公用品", "other": "其他"}
+    expense_type_map = {
+        "travel": "差旅费", "entertainment": "招待费", "office": "办公用品",
+        "communication": "通信费", "transport": "市内交通费", "meeting": "会议费",
+        "training": "培训费", "other": "其他费用",
+    }
+    status_map = {
+        "pending": "待审批", "approved": "已通过", "rejected": "已驳回",
+        "returned": "已退回", "paid": "已付款", "cancelled": "已撤销",
+    }
     total = float(reimb_data.get("total_amount", 0))
+    status_cn = status_map.get(reimb_data.get("status", ""), reimb_data.get("status", ""))
 
     draw_row("报销单号：", reimb_id, "日期：", today)
-    draw_row("部    门：", reimb_data.get("department", ""),
-             "费用类型：", expense_type_map.get(reimb_data.get("expense_type", ""), ""))
+    draw_row("申 请 人：", reimb_data.get("user_name", ""),
+             "部    门：", reimb_data.get("department", ""))
+    draw_row("费用类型：", expense_type_map.get(reimb_data.get("expense_type", ""), reimb_data.get("expense_type", "")),
+             "状    态：", status_cn)
     draw_row("金    额：", f"¥{total:,.2f}",
              "发票张数：", str(len(reimb_data.get("invoices", [])) or 1))
+    if reimb_data.get("description"):
+        draw_row("报销说明：", str(reimb_data.get("description", ""))[:40])
 
     # ---- 发票明细表格 ----
     y -= 6 * mm
@@ -565,11 +578,26 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
             c.drawString(cx + 1 * mm, y - tbl_row_h + 2 * mm, v)
         y -= tbl_row_h
 
-    # ---- 审批签字区 ----
+    # ---- 审批记录 + 签字区 ----
     y -= 10 * mm
     c.setFont(body_font, 10)
     c.drawString(col1_x, y + 2 * mm, "审批记录：")
     y -= 7 * mm
+
+    # 若已有审批流转记录，逐条展示
+    approvals = reimb_data.get("approvals", []) or []
+    action_cn = {"approve": "通过", "reject": "驳回", "return": "退回",
+                 "pending": "待审批", "cancelled": "已撤销"}
+    if approvals:
+        c.setFont(body_font, 9)
+        for ap in approvals[:5]:
+            act = action_cn.get(ap.get("action", ""), ap.get("action", ""))
+            line = f"  {ap.get('step', '')}. {ap.get('approver', '')} — {act}"
+            if ap.get("comment"):
+                line += f"（{str(ap.get('comment'))[:20]}）"
+            c.drawString(col1_x, y + 2 * mm, line)
+            y -= 6 * mm
+        y -= 4 * mm
 
     sign_labels = [
         ("申请人签名：", col1_x),
@@ -595,293 +623,6 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
 
     c.save()
     logger.info(f"PDF created: {path}")
-    return path
-
-
-# =============================================================================
-# 工具 4b：生成增值税发票 PDF（模拟票据，用于测试/演示/补开）
-# =============================================================================
-def _amount_to_chinese(amount: float) -> str:
-    """把金额数字转成中文大写（如 1234.56 → 壹仟贰佰叁拾肆元伍角陆分）。"""
-    if amount < 0:
-        return "负" + _amount_to_chinese(-amount)
-    digits = "零壹贰叁肆伍陆柒捌玖"
-    int_units = ["", "拾", "佰", "仟"]
-    big_units = ["", "万", "亿", "兆"]
-
-    # 分离整数与小数（角、分）
-    amount = round(amount + 1e-9, 2)
-    int_part = int(amount)
-    frac = int(round((amount - int_part) * 100))
-    jiao, fen = frac // 10, frac % 10
-
-    def _four(n: int) -> str:
-        s = ""
-        started = False
-        for i in range(3, -1, -1):
-            d = (n // (10 ** i)) % 10
-            if d == 0:
-                if started and i > 0:
-                    s += "零"
-            else:
-                s += digits[d] + int_units[i]
-                started = True
-        return s.rstrip("零")
-
-    if int_part == 0:
-        int_str = ""
-    else:
-        groups = []
-        n = int_part
-        gi = 0
-        while n > 0:
-            grp = n % 10000
-            if grp > 0:
-                groups.append(_four(grp) + big_units[gi])
-            else:
-                groups.append("")
-            n //= 10000
-            gi += 1
-        int_str = "".join(reversed([g for g in groups if g != ""]))
-        # 处理组间缺位补零（简化：合并多余零）
-        int_str = int_str + "元"
-
-    if jiao == 0 and fen == 0:
-        frac_str = "整" if int_str else "零元整"
-    else:
-        frac_str = ""
-        if jiao > 0:
-            frac_str += digits[jiao] + "角"
-        elif fen > 0 and int_part > 0:
-            frac_str += "零"
-        if fen > 0:
-            frac_str += digits[fen] + "分"
-
-    result = (int_str or "") + frac_str
-    return result or "零元整"
-
-
-def generate_invoice_pdf(invoice_data: dict) -> str:
-    """
-    生成一张模拟的中国增值税普通发票 PDF（用于测试/演示/补录票据）。
-
-    与 generate_reimbursement_pdf（报销单）不同：本函数产出的是「发票」样式，
-    含发票代码/号码、购买方/销售方信息栏、货物明细表、价税合计大写、开票信息等。
-
-    参数:
-        invoice_data : 发票数据字典，可包含:
-          invoice_code, invoice_number, invoice_date, invoice_type,
-          buyer_name, buyer_tax_id, seller_name, seller_tax_id,
-          amount(不含税), tax_amount(税额), total_with_tax(价税合计),
-          items(明细行列表), remarks, payee, reviewer, drawer
-
-    返回:
-        生成的发票 PDF 文件绝对路径（临时目录）。
-    """
-    import os as _os
-    import tempfile
-    import random
-    from datetime import date
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-
-    # ---- 注册中文字体（跨平台）----
-    _font_candidates = [
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simsun.ttc",
-    ]
-    title_font = "Helvetica"
-    body_font = "Helvetica"
-    for fp in _font_candidates:
-        if _os.path.exists(fp):
-            try:
-                fn = _os.path.splitext(_os.path.basename(fp))[0].replace(" ", "").replace("-", "")
-                pdfmetrics.registerFont(TTFont(fn, fp))
-                if title_font == "Helvetica":
-                    title_font = fn
-                body_font = fn
-                break
-            except Exception:
-                continue
-
-    # ---- 补全缺省字段 ----
-    inv_type = invoice_data.get("invoice_type") or "增值税普通发票"
-    inv_code = str(invoice_data.get("invoice_code") or "".join(random.choice("0123456789") for _ in range(12)))
-    inv_number = str(invoice_data.get("invoice_number") or "".join(random.choice("0123456789") for _ in range(8)))
-    inv_date = invoice_data.get("invoice_date") or date.today().isoformat()
-
-    buyer_name = invoice_data.get("buyer_name") or "中国石油华东分公司"
-    buyer_tax_id = invoice_data.get("buyer_tax_id") or "91310000710913000J"
-    seller_name = invoice_data.get("seller_name") or "某某供应商有限公司"
-    seller_tax_id = invoice_data.get("seller_tax_id") or ""
-
-    items = invoice_data.get("items") or []
-    amount = invoice_data.get("amount")
-    tax_amount = invoice_data.get("tax_amount")
-    total_with_tax = invoice_data.get("total_with_tax")
-
-    # 金额推断：优先用 items 汇总，其次用传入值
-    if items:
-        amount = sum(float(it.get("amount", 0) or 0) for it in items)
-    amount = float(amount or 0)
-    tax_amount = float(tax_amount or 0)
-    if total_with_tax is None:
-        total_with_tax = amount + tax_amount
-    total_with_tax = float(total_with_tax)
-    # 若只给了价税合计，反推不含税（默认无税率时不含税=价税合计）
-    if amount == 0 and total_with_tax > 0:
-        amount = total_with_tax - tax_amount
-
-    path = tempfile.mktemp(suffix=f"_invoice_{inv_number}.pdf")
-
-    # 发票通常是横向票样，这里用 A4 横向布局的上半部分
-    c = canvas.Canvas(path, pagesize=A4)
-    W, H = A4
-    margin = 15 * mm
-
-    # ---- 外框（发票联红框风格）----
-    c.setStrokeColorRGB(0.75, 0.15, 0.15)
-    c.setLineWidth(1.2)
-    box_top = H - margin
-    box_bottom = H - margin - 120 * mm
-    c.rect(margin, box_bottom, W - 2 * margin, box_top - box_bottom)
-
-    # ---- 标题 ----
-    c.setFillColorRGB(0.75, 0.15, 0.15)
-    c.setFont(title_font, 20)
-    c.drawCentredString(W / 2, box_top - 12 * mm, "中国石油华东分公司")
-    c.setFont(title_font, 15)
-    c.drawCentredString(W / 2, box_top - 20 * mm, inv_type)
-    c.setFillColorRGB(0, 0, 0)
-
-    # ---- 右上：发票代码/号码/日期 ----
-    c.setFont(body_font, 9)
-    right_x = W - margin - 55 * mm
-    c.drawString(right_x, box_top - 10 * mm, f"发票代码: {inv_code}")
-    c.drawString(right_x, box_top - 15 * mm, f"发票号码: {inv_number}")
-    c.drawString(right_x, box_top - 20 * mm, f"开票日期: {inv_date}")
-
-    # ---- 分隔线 ----
-    y = box_top - 26 * mm
-    c.setStrokeColorRGB(0.75, 0.15, 0.15)
-    c.setLineWidth(0.6)
-    c.line(margin + 2 * mm, y, W - margin - 2 * mm, y)
-
-    # ---- 购买方信息栏 ----
-    def _info_block(y0, title, name, tax_id):
-        c.setFont(body_font, 9)
-        c.drawString(margin + 4 * mm, y0 - 5 * mm, f"{title}")
-        c.drawString(margin + 22 * mm, y0 - 5 * mm, f"名  称: {name}")
-        c.drawString(margin + 22 * mm, y0 - 11 * mm, f"纳税人识别号: {tax_id}")
-        c.setStrokeColorRGB(0.8, 0.8, 0.8)
-        c.setLineWidth(0.3)
-        c.line(margin + 2 * mm, y0 - 14 * mm, W - margin - 2 * mm, y0 - 14 * mm)
-
-    _info_block(y, "购买方", buyer_name, buyer_tax_id)
-    y -= 16 * mm
-    _info_block(y, "销售方", seller_name, seller_tax_id)
-    y -= 16 * mm
-
-    # ---- 货物明细表 ----
-    tbl_left = margin + 4 * mm
-    headers = ["货物或应税劳务名称", "规格型号", "单位", "数量", "单价", "金额", "税率", "税额"]
-    col_w = [42 * mm, 20 * mm, 12 * mm, 14 * mm, 20 * mm, 24 * mm, 12 * mm, 22 * mm]
-    col_x = [tbl_left]
-    for w in col_w[:-1]:
-        col_x.append(col_x[-1] + w)
-    row_h = 7 * mm
-
-    c.setFont(body_font, 8)
-    c.setFillColorRGB(0.95, 0.92, 0.92)
-    c.rect(tbl_left, y - row_h, sum(col_w), row_h, fill=1, stroke=1)
-    c.setFillColorRGB(0, 0, 0)
-    for hdr, cx in zip(headers, col_x):
-        c.drawString(cx + 1 * mm, y - row_h + 2 * mm, hdr)
-    y -= row_h
-
-    if not items:
-        items = [{
-            "name": invoice_data.get("description") or "服务费",
-            "specification": "", "unit": "项", "quantity": 1,
-            "unit_price": amount, "amount": amount, "tax_rate": "",
-        }]
-    for it in items[:6]:
-        c.rect(tbl_left, y - row_h, sum(col_w), row_h, fill=0, stroke=1)
-        vals = [
-            str(it.get("name", ""))[:20],
-            str(it.get("specification", ""))[:8],
-            str(it.get("unit", ""))[:4],
-            str(it.get("quantity", "") or ""),
-            f"{float(it.get('unit_price', 0) or 0):,.2f}" if it.get("unit_price") else "",
-            f"{float(it.get('amount', 0) or 0):,.2f}",
-            str(it.get("tax_rate", "")),
-            f"{float(it.get('tax_amount', 0) or 0):,.2f}" if it.get("tax_amount") else "",
-        ]
-        for v, cx in zip(vals, col_x):
-            c.drawString(cx + 1 * mm, y - row_h + 2 * mm, v)
-        y -= row_h
-
-    # ---- 合计行 ----
-    c.rect(tbl_left, y - row_h, sum(col_w), row_h, fill=0, stroke=1)
-    c.setFont(body_font, 8)
-    c.drawString(col_x[0] + 1 * mm, y - row_h + 2 * mm, "合  计")
-    c.drawString(col_x[5] + 1 * mm, y - row_h + 2 * mm, f"¥{amount:,.2f}")
-    c.drawString(col_x[7] + 1 * mm, y - row_h + 2 * mm, f"¥{tax_amount:,.2f}")
-    y -= row_h
-
-    # ---- 价税合计（大写 + 小写）----
-    y -= 2 * mm
-    c.setFont(body_font, 9)
-    cn_amount = _amount_to_chinese(total_with_tax)
-    c.drawString(tbl_left, y - 5 * mm, f"价税合计（大写）:  {cn_amount}")
-    c.drawRightString(W - margin - 4 * mm, y - 5 * mm, f"（小写）¥{total_with_tax:,.2f}")
-    y -= 10 * mm
-    c.setStrokeColorRGB(0.75, 0.15, 0.15)
-    c.setLineWidth(0.6)
-    c.line(margin + 2 * mm, y, W - margin - 2 * mm, y)
-
-    # ---- 备注 + 开票信息 ----
-    y -= 6 * mm
-    c.setFont(body_font, 8)
-    remarks = invoice_data.get("remarks") or ""
-    c.drawString(tbl_left, y, f"备注: {remarks}")
-    y -= 8 * mm
-    payee = invoice_data.get("payee") or ""
-    reviewer = invoice_data.get("reviewer") or ""
-    drawer = invoice_data.get("drawer") or ""
-    c.drawString(tbl_left, y, f"收款人: {payee}")
-    c.drawString(tbl_left + 45 * mm, y, f"复核: {reviewer}")
-    c.drawString(tbl_left + 85 * mm, y, f"开票人: {drawer}")
-
-    # ---- 底部提示 ----
-    c.setFont(body_font, 7)
-    c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawCentredString(W / 2, box_bottom + 3 * mm, "本发票为系统生成的模拟票据，仅供测试与演示使用，不具备法律效力。")
-
-    c.save()
-    logger.info(f"Invoice PDF created: {path} (number={inv_number}, total={total_with_tax})")
-
-    # 回写解析后的实际值，方便调用方（如 API）获取生成的发票号/金额
-    if isinstance(invoice_data, dict):
-        invoice_data["invoice_code"] = inv_code
-        invoice_data["invoice_number"] = inv_number
-        invoice_data["invoice_date"] = inv_date
-        invoice_data["amount"] = amount
-        invoice_data["tax_amount"] = tax_amount
-        invoice_data["total_with_tax"] = total_with_tax
-
     return path
 
 
@@ -1279,7 +1020,6 @@ ALL_TOOLS = [
     compliance_check,
     budget_check,
     generate_reimbursement_pdf,
-    generate_invoice_pdf,
     send_approval_email,
     save_reimbursement_to_db,
     query_reimbursement_status,
