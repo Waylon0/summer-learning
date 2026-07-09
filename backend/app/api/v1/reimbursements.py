@@ -18,6 +18,7 @@ from app.services.reimbursement_svc import ReimbursementService
 from app.services.pdf_svc import generate_and_store_reimbursement_pdf
 from app.schemas.reimbursement import (
     ReimbursementCreate, ReimbursementResponse, ReimbursementPdfResponse,
+    DraftCreate, ExpenseItemCreate, ItemInvoiceCreate,
 )
 from app.models.user import User
 from app.core.exceptions import InternalErrorException
@@ -163,6 +164,142 @@ async def generate_reimbursement_pdf_endpoint(
 
     logger.info(f"报销单 PDF 生成: {reimb_id} by {user.username} → {info['object_name']}")
     return ReimbursementPdfResponse(**info)
+
+
+# =============================================================================
+# 分步式报销（草稿 + 费用明细）—— 表单式 UI 与对话式 Agent 共用同一套服务
+# =============================================================================
+@router.post("/drafts")
+async def create_draft(
+    data: DraftCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """创建报销单草稿。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    svc = ExpenseSheetService(db)
+    reimb = await svc.create_draft(
+        user_id=user.id, user_name=user.name, department=user.department,
+        expense_type=data.expense_type, title=data.title,
+        trip_destination=data.trip_destination,
+        trip_start_date=data.trip_start_date or "", trip_end_date=data.trip_end_date or "",
+        description=data.description,
+    )
+    return reimb.to_dict(with_items=True)
+
+
+async def _load_owned_draft(svc, reimb_id: str, user: User):
+    from app.core.exceptions import ReimbursementNotFoundError
+    try:
+        reimb = await svc.get(reimb_id)
+    except ReimbursementNotFoundError:
+        raise HTTPException(status_code=404, detail="报销单不存在")
+    if user.role not in ("admin", "finance") and reimb.user_id != user.id:
+        raise HTTPException(status_code=403, detail="只能操作本人的报销单")
+    return reimb
+
+
+@router.get("/{reimb_id}/detail")
+async def get_reimbursement_detail(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """获取报销单完整详情（含费用明细行 + 每行发票 + 审批记录）。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    svc = ExpenseSheetService(db)
+    reimb = await _load_owned_draft(svc, reimb_id, user)
+    return reimb.to_dict(with_items=True)
+
+
+@router.post("/{reimb_id}/items")
+async def add_item(
+    reimb_id: str,
+    data: ExpenseItemCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """向草稿添加一条费用明细（自动判定是否需发票/补贴）。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.core.exceptions import BusinessException
+    svc = ExpenseSheetService(db)
+    await _load_owned_draft(svc, reimb_id, user)
+    try:
+        reimb, item = await svc.add_item(
+            reimb_id, subtype=data.subtype, amount=data.amount,
+            unit_price=data.unit_price, quantity=data.quantity,
+            description=data.description, occur_date=data.occur_date or "",
+            from_location=data.from_location, to_location=data.to_location,
+        )
+    except BusinessException as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return {"item": item.to_dict(), "reimbursement": reimb.to_dict(with_items=True)}
+
+
+@router.delete("/{reimb_id}/items/{item_seq}")
+async def remove_item(
+    reimb_id: str, item_seq: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """删除草稿中的一条费用明细。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.core.exceptions import BusinessException
+    svc = ExpenseSheetService(db)
+    await _load_owned_draft(svc, reimb_id, user)
+    try:
+        reimb = await svc.remove_item(reimb_id, item_seq)
+    except BusinessException as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return reimb.to_dict(with_items=True)
+
+
+@router.post("/{reimb_id}/items/{item_seq}/invoice")
+async def attach_item_invoice(
+    reimb_id: str, item_seq: int, data: ItemInvoiceCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """为费用明细行关联一张发票。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.core.exceptions import BusinessException
+    svc = ExpenseSheetService(db)
+    await _load_owned_draft(svc, reimb_id, user)
+    try:
+        reimb = await svc.attach_invoice_to_item(reimb_id, item_seq, data.model_dump())
+    except BusinessException as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return reimb.to_dict(with_items=True)
+
+
+@router.get("/{reimb_id}/validate")
+async def validate_draft(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """提交前校验（列出缺票/警告）。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    svc = ExpenseSheetService(db)
+    reimb = await _load_owned_draft(svc, reimb_id, user)
+    return svc.validate(reimb)
+
+
+@router.post("/{reimb_id}/submit")
+async def submit_draft(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """提交草稿进入审批（严格校验 + 预算检查）。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    svc = ExpenseSheetService(db)
+    await _load_owned_draft(svc, reimb_id, user)
+    result = await svc.submit(reimb_id)
+    if not result.get("success"):
+        # 校验失败返回 400 + 详情
+        raise HTTPException(status_code=400, detail=result.get("message", "提交失败"))
+    return result
 
 
 def _to_response(reimb) -> ReimbursementResponse:

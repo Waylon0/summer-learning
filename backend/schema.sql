@@ -25,12 +25,19 @@ CREATE TABLE IF NOT EXISTS reimbursements (
     user_name               VARCHAR(64) NOT NULL,
     department              VARCHAR(64) NOT NULL,
     expense_type            VARCHAR(32) NOT NULL,
-    total_amount            NUMERIC(12, 2) NOT NULL,
+    title                   VARCHAR(128),
+    total_amount            NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    invoice_amount          NUMERIC(12, 2) DEFAULT 0,
+    subsidy_amount          NUMERIC(12, 2) DEFAULT 0,
     description             TEXT,
     invoice_count           INTEGER NOT NULL DEFAULT 0,
+    trip_destination        VARCHAR(64),
+    trip_start_date         DATE,
+    trip_end_date           DATE,
+    trip_days               INTEGER,
     need_special_approval   BOOLEAN NOT NULL DEFAULT FALSE,
     budget_remaining_after  NUMERIC(12, 2),
-    status                  VARCHAR(16) NOT NULL DEFAULT 'pending',
+    status                  VARCHAR(16) NOT NULL DEFAULT 'draft',
     created_at              TIMESTAMP WITH TIME ZONE DEFAULT now(),
     updated_at              TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
@@ -38,9 +45,33 @@ CREATE INDEX IF NOT EXISTS ix_reimbursements_user_id ON reimbursements (user_id)
 CREATE INDEX IF NOT EXISTS ix_reimbursements_department ON reimbursements (department);
 CREATE INDEX IF NOT EXISTS ix_reimbursements_status ON reimbursements (status);
 
+-- 费用明细行（报销单 → 多条明细 → 每条明细多张发票）
+CREATE TABLE IF NOT EXISTS expense_items (
+    id                 VARCHAR(36) PRIMARY KEY,
+    reimbursement_id   VARCHAR(36) NOT NULL REFERENCES reimbursements(id) ON DELETE CASCADE,
+    seq                INTEGER NOT NULL DEFAULT 0,
+    category           VARCHAR(32) NOT NULL,
+    subtype            VARCHAR(32) NOT NULL,
+    description        VARCHAR(256),
+    unit_price         NUMERIC(12, 2),
+    quantity           NUMERIC(10, 2) DEFAULT 1,
+    unit               VARCHAR(16),
+    amount             NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    evidence_type      VARCHAR(16) DEFAULT 'required',
+    is_subsidy         BOOLEAN DEFAULT FALSE,
+    needs_invoice      BOOLEAN DEFAULT TRUE,
+    has_invoice        BOOLEAN DEFAULT FALSE,
+    occur_date         DATE,
+    from_location      VARCHAR(64),
+    to_location        VARCHAR(64),
+    created_at         TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_expense_items_reimbursement_id ON expense_items (reimbursement_id);
+
 CREATE TABLE IF NOT EXISTS invoices (
     id                 VARCHAR(36) PRIMARY KEY,
     reimbursement_id   VARCHAR(36) NOT NULL REFERENCES reimbursements(id),
+    expense_item_id    VARCHAR(36) REFERENCES expense_items(id),
     invoice_code       VARCHAR(32),
     invoice_number     VARCHAR(32),
     invoice_date       DATE,
@@ -55,6 +86,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     file_path          VARCHAR(256)
 );
 CREATE INDEX IF NOT EXISTS ix_invoices_reimbursement_id ON invoices (reimbursement_id);
+CREATE INDEX IF NOT EXISTS ix_invoices_expense_item_id ON invoices (expense_item_id);
 
 CREATE TABLE IF NOT EXISTS department_budget (
     id              VARCHAR(36) PRIMARY KEY,

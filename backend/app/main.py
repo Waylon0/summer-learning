@@ -32,7 +32,7 @@ from app.core.exceptions import (
     FileValidationError,
 )
 from app.core.middleware import RequestLoggingMiddleware, log_error
-from app.models import Reimbursement, Invoice, DepartmentBudget, ApprovalRecord, User
+from app.models import Reimbursement, Invoice, ExpenseItem, DepartmentBudget, ApprovalRecord, User
 from app.models import Conversation, ConversationMessage
 from app.api.v1.chat import router as chat_router
 from app.api.v1.reimbursements import router as reimb_router
@@ -69,7 +69,21 @@ async def _migrate_schema(conn):
         ("invoices", "buyer_tax_id", "VARCHAR(32)"),
         ("invoices", "tax_amount", "NUMERIC(12, 2) DEFAULT 0"),
         ("invoices", "total_with_tax", "NUMERIC(12, 2)"),
+        ("invoices", "expense_item_id", "VARCHAR(36)"),
+        # reimbursements 表扩展字段 (费用明细/草稿/差旅上下文)
+        ("reimbursements", "title", "VARCHAR(128)"),
+        ("reimbursements", "invoice_amount", "NUMERIC(12, 2) DEFAULT 0"),
+        ("reimbursements", "subsidy_amount", "NUMERIC(12, 2) DEFAULT 0"),
+        ("reimbursements", "trip_destination", "VARCHAR(64)"),
+        ("reimbursements", "trip_start_date", "DATE"),
+        ("reimbursements", "trip_end_date", "DATE"),
+        ("reimbursements", "trip_days", "INTEGER"),
     ]
+    # 兜底：status 默认值从 pending → draft（新库无所谓，旧库若已有则保留）
+    try:
+        await conn.execute(text("ALTER TABLE reimbursements ALTER COLUMN status SET DEFAULT 'draft'"))
+    except Exception:
+        pass
 
     for table, column, col_type in migrations:
         try:

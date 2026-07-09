@@ -101,6 +101,40 @@ class ReimbursementPdfResponse(BaseModel):
 
 
 # =============================================================================
+# 2c. 分步式报销（草稿 + 费用明细）请求
+# =============================================================================
+class DraftCreate(BaseModel):
+    """创建报销单草稿"""
+    expense_type: str = "travel"
+    title: str = ""
+    trip_destination: str = ""
+    trip_start_date: Optional[str] = None
+    trip_end_date: Optional[str] = None
+    description: str = ""
+
+
+class ExpenseItemCreate(BaseModel):
+    """添加一条费用明细"""
+    subtype: str                                   # flight/train/hotel/taxi/meal_allowance...
+    amount: float = 0
+    unit_price: float = 0
+    quantity: float = 0
+    description: str = ""
+    occur_date: Optional[str] = None
+    from_location: str = ""
+    to_location: str = ""
+
+
+class ItemInvoiceCreate(BaseModel):
+    """为明细行关联发票"""
+    amount: float = 0
+    invoice_code: str = ""
+    invoice_number: str = ""
+    invoice_date: Optional[str] = None
+    seller_name: str = ""
+
+
+# =============================================================================
 # 3. 报销单创建请求
 # =============================================================================
 class ReimbursementCreate(BaseModel):

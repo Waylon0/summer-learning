@@ -41,12 +41,21 @@ class Reimbursement(Base):
     department: Mapped[str] = mapped_column(String(64), nullable=False, index=True) # 申请部门
 
     # --- 报销详情 ---
-    expense_type: Mapped[str] = mapped_column(String(32), nullable=False)          # 费用类型：travel/entertainment/office/other
+    expense_type: Mapped[str] = mapped_column(String(32), nullable=False)          # 主费用类型：travel/entertainment/office/other
+    title: Mapped[str] = mapped_column(String(128), nullable=True)                 # 报销单标题（如"北京出差报销"）
     total_amount: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), nullable=False             # Decimal=精确小数，12位总长，2位小数
+        Numeric(12, 2), nullable=False, default=0  # Decimal=精确小数，12位总长，2位小数（明细汇总）
     )
+    invoice_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)     # 需发票部分合计
+    subsidy_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)     # 补贴部分合计（无需发票）
     description: Mapped[str] = mapped_column(Text, nullable=True)                  # 报销说明（可空）
     invoice_count: Mapped[int] = mapped_column(Integer, default=0)                 # 发票张数
+
+    # --- 差旅上下文（可空，差旅类填写）---
+    trip_destination: Mapped[str] = mapped_column(String(64), nullable=True)       # 出差目的地
+    trip_start_date: Mapped[date] = mapped_column(Date, nullable=True)             # 出差起始日
+    trip_end_date: Mapped[date] = mapped_column(Date, nullable=True)              # 出差结束日
+    trip_days: Mapped[int] = mapped_column(Integer, nullable=True)                # 出差天数
 
     # --- 预算控制 ---
     need_special_approval: Mapped[bool] = mapped_column(Boolean, default=False)     # 是否需要特殊审批（预算超标时为True）
@@ -56,7 +65,7 @@ class Reimbursement(Base):
 
     # --- 状态与时间 ---
     status: Mapped[str] = mapped_column(
-        String(16), default="pending", index=True  # pending→approved→rejected→paid
+        String(16), default="draft", index=True     # draft→pending→approved→rejected→returned→paid
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()  # 创建时间（数据库自动填）
@@ -67,7 +76,7 @@ class Reimbursement(Base):
 
     # --- 关联关系 ---
     # relationship 定义了"一对多"关系：
-    #   一个报销单 → 多张发票、多条审批记录
+    #   一个报销单 → 多条费用明细行 → 每行多张发票；一个报销单 → 多条审批记录
     approvals: Mapped[list["ApprovalRecord"]] = relationship(
         back_populates="reimbursement",        # 双向绑定（对方也有一个 reimbursement 字段指向我）
         cascade="all, delete-orphan"           # 删除报销单时，关联的审批记录也一起删掉
@@ -76,24 +85,111 @@ class Reimbursement(Base):
         back_populates="reimbursement",
         cascade="all, delete-orphan"
     )
+    items: Mapped[list["ExpenseItem"]] = relationship(
+        back_populates="reimbursement",
+        cascade="all, delete-orphan",
+        order_by="ExpenseItem.seq",
+    )
 
     # --- 工具方法 ---
-    def to_dict(self):
+    def to_dict(self, with_items: bool = False):
         """把 ORM 对象转成 Python 字典，方便 JSON 序列化"""
-        return {
+        d = {
             "id": self.id,
             "user_id": self.user_id,
             "user_name": self.user_name,
             "department": self.department,
             "expense_type": self.expense_type,
-            "total_amount": float(self.total_amount),   # Decimal → float 才能 JSON 序列化
+            "title": self.title or "",
+            "total_amount": float(self.total_amount or 0),   # Decimal → float 才能 JSON 序列化
+            "invoice_amount": float(self.invoice_amount or 0),
+            "subsidy_amount": float(self.subsidy_amount or 0),
             "description": self.description,
             "invoice_count": self.invoice_count,
+            "trip_destination": self.trip_destination or "",
+            "trip_start_date": self.trip_start_date.isoformat() if self.trip_start_date else None,
+            "trip_end_date": self.trip_end_date.isoformat() if self.trip_end_date else None,
+            "trip_days": self.trip_days,
             "need_special_approval": self.need_special_approval,
             "budget_remaining_after": float(self.budget_remaining_after) if self.budget_remaining_after else None,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if with_items:
+            d["items"] = [it.to_dict() for it in (self.items or [])]
+            d["approvals"] = [a.to_dict() for a in (self.approvals or [])]
+        return d
+
+
+# =============================================================================
+# 表1b：费用明细行表（报销单 → 多条明细 → 每条明细多张发票）
+# =============================================================================
+class ExpenseItem(Base):
+    """
+    费用明细行：报销单里的一笔具体费用。
+
+    真实企业报销单结构：一张报销单下按费用大类列出每一笔明细，
+    例如「差旅费」下有：机票 ¥1200（去程）、机票 ¥1180（回程）、
+    酒店 ¥500×3晚、餐补 ¥150×4天、打车 ¥45（补贴）……
+    每笔明细记录：大类、子类、金额、数量/单价、是否需发票/补贴、发票关联。
+    """
+    __tablename__ = "expense_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    reimbursement_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reimbursements.id"), nullable=False, index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)          # 明细顺序
+
+    category: Mapped[str] = mapped_column(String(32), nullable=False)             # 费用大类 transport_intercity...
+    subtype: Mapped[str] = mapped_column(String(32), nullable=False)             # 费用子类 flight/train/hotel...
+    description: Mapped[str] = mapped_column(String(256), nullable=True)         # 明细说明（如"去程 北京→上海"）
+
+    # 金额构成：unit_price × quantity = amount
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True)   # 单价（如 500 元/晚）
+    quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True, default=1)  # 数量（如 3 晚 / 4 天）
+    unit: Mapped[str] = mapped_column(String(16), nullable=True)                 # 单位（晚/天/次/程）
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)  # 小计
+
+    # 单据形式
+    evidence_type: Mapped[str] = mapped_column(String(16), default="required")   # required/subsidy/conditional
+    is_subsidy: Mapped[bool] = mapped_column(Boolean, default=False)             # 是否作为补贴发放（无需发票）
+    needs_invoice: Mapped[bool] = mapped_column(Boolean, default=True)          # 是否必须发票
+    has_invoice: Mapped[bool] = mapped_column(Boolean, default=False)           # 是否已提供发票
+
+    # 差旅上下文（可空）
+    occur_date: Mapped[date] = mapped_column(Date, nullable=True)                # 发生日期
+    from_location: Mapped[str] = mapped_column(String(64), nullable=True)       # 出发地（交通）
+    to_location: Mapped[str] = mapped_column(String(64), nullable=True)         # 到达地（交通）
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    reimbursement: Mapped["Reimbursement"] = relationship(back_populates="items")
+    invoices: Mapped[list["Invoice"]] = relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "reimbursement_id": self.reimbursement_id,
+            "seq": self.seq,
+            "category": self.category,
+            "subtype": self.subtype,
+            "description": self.description or "",
+            "unit_price": float(self.unit_price) if self.unit_price is not None else None,
+            "quantity": float(self.quantity) if self.quantity is not None else None,
+            "unit": self.unit or "",
+            "amount": float(self.amount or 0),
+            "evidence_type": self.evidence_type,
+            "is_subsidy": self.is_subsidy,
+            "needs_invoice": self.needs_invoice,
+            "has_invoice": self.has_invoice,
+            "occur_date": self.occur_date.isoformat() if self.occur_date else None,
+            "from_location": self.from_location or "",
+            "to_location": self.to_location or "",
+            "invoices": [inv.to_dict() for inv in (self.invoices or [])],
         }
 
 
@@ -107,6 +203,9 @@ class Invoice(Base):
     reimbursement_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("reimbursements.id"),
         nullable=False, index=True
+    )
+    expense_item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("expense_items.id"), nullable=True, index=True  # 关联到具体费用明细行
     )
     # 发票头部
     invoice_code: Mapped[str] = mapped_column(String(32), nullable=True)
@@ -126,11 +225,13 @@ class Invoice(Base):
     file_path: Mapped[str] = mapped_column(String(256), nullable=True)
 
     reimbursement: Mapped["Reimbursement"] = relationship(back_populates="invoices")
+    item: Mapped["ExpenseItem"] = relationship(back_populates="invoices")
 
     def to_dict(self):
         return {
             "id": self.id,
             "reimbursement_id": self.reimbursement_id,
+            "expense_item_id": self.expense_item_id or "",
             "invoice_code": self.invoice_code or "",
             "invoice_number": self.invoice_number or "",
             "invoice_date": self.invoice_date.isoformat() if self.invoice_date else None,

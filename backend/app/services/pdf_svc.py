@@ -18,22 +18,51 @@ import os
 from loguru import logger
 
 from app.models.reimbursement import Reimbursement
-from app.agent.tools.reimburse_tools import generate_reimbursement_pdf
+from app.services.reimbursement_pdf import render_reimbursement_pdf
 from app.services.ocr_svc import upload_file, get_file_url
 
 
 def _reimb_to_pdf_data(reimb: Reimbursement) -> dict:
-    """把 Reimbursement ORM 对象（含 invoices/approvals）转成 PDF 生成所需字典。"""
-    invoices = []
-    for inv in (reimb.invoices or []):
-        invoices.append({
-            "invoice_code": inv.invoice_code or "",
-            "invoice_number": inv.invoice_number or "",
-            "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else "",
-            "amount": float(inv.amount or 0),
-            "tax_amount": float(inv.tax_amount or 0) if inv.tax_amount is not None else 0,
-            "seller_name": inv.seller_name or "",
+    """把 Reimbursement ORM 对象（含 items/invoices/approvals）转成 PDF 生成所需字典。"""
+    from app.agent import expense_rules as rules
+    from collections import defaultdict
+
+    # 明细行（按大类分组）
+    items = sorted(reimb.items or [], key=lambda x: x.seq)
+    cat_groups: dict[str, list] = defaultdict(list)
+    cat_subtotal: dict[str, float] = defaultdict(float)
+    for it in items:
+        cat_subtotal[it.category] += float(it.amount or 0)
+        invs = [{
+            "invoice_code": v.invoice_code or "",
+            "invoice_number": v.invoice_number or "",
+            "invoice_date": v.invoice_date.isoformat() if v.invoice_date else "",
+            "amount": float(v.amount or 0),
+            "seller_name": v.seller_name or "",
+        } for v in (it.invoices or [])]
+        cat_groups[it.category].append({
+            "seq": it.seq,
+            "subtype_label": rules.subtype_label(it.subtype),
+            "description": it.description or "",
+            "unit_price": float(it.unit_price) if it.unit_price is not None else None,
+            "quantity": float(it.quantity) if it.quantity is not None else None,
+            "unit": it.unit or "",
+            "amount": float(it.amount or 0),
+            "occur_date": it.occur_date.isoformat() if it.occur_date else "",
+            "from_location": it.from_location or "",
+            "to_location": it.to_location or "",
+            "is_subsidy": it.is_subsidy,
+            "needs_invoice": it.needs_invoice,
+            "has_invoice": bool(invs),
+            "invoices": invs,
         })
+    categories = [{
+        "category": cat,
+        "category_label": rules.category_label(cat),
+        "subtotal": round(cat_subtotal[cat], 2),
+        "items": cat_groups[cat],
+    } for cat in cat_groups]
+
     approvals = []
     for ap in (reimb.approvals or []):
         approvals.append({
@@ -47,11 +76,18 @@ def _reimb_to_pdf_data(reimb: Reimbursement) -> dict:
         "user_name": reimb.user_name,
         "department": reimb.department,
         "expense_type": reimb.expense_type,
+        "title": reimb.title or "",
         "total_amount": float(reimb.total_amount or 0),
+        "invoice_amount": float(reimb.invoice_amount or 0),
+        "subsidy_amount": float(reimb.subsidy_amount or 0),
         "description": reimb.description or "",
         "status": reimb.status,
         "need_special_approval": reimb.need_special_approval,
-        "invoices": invoices,
+        "trip_destination": reimb.trip_destination or "",
+        "trip_start_date": reimb.trip_start_date.isoformat() if reimb.trip_start_date else "",
+        "trip_end_date": reimb.trip_end_date.isoformat() if reimb.trip_end_date else "",
+        "trip_days": reimb.trip_days,
+        "categories": categories,
         "approvals": approvals,
     }
 
@@ -60,15 +96,23 @@ async def generate_and_store_reimbursement_pdf(reimb: Reimbursement) -> dict:
     """
     为一张报销单生成结构化 PDF 并存储，返回下载信息。
 
+    注意：会重新用 ExpenseSheetService 以 eager-load items/invoices/approvals，
+    避免异步惰性加载触发 MissingGreenlet。
+
     Returns:
         {reimb_id, object_name, download_url, total_amount, status}
     Raises:
         Exception: PDF 生成或存储失败时抛出（由调用方决定如何提示）。
     """
-    pdf_data = _reimb_to_pdf_data(reimb)
+    from app.core.database import AsyncSessionLocal
+    from app.services.expense_sheet_svc import ExpenseSheetService
+
+    async with AsyncSessionLocal() as db:
+        full = await ExpenseSheetService(db).get(reimb.id)
+        pdf_data = _reimb_to_pdf_data(full)
 
     # CPU 密集：放线程池，避免阻塞事件循环
-    pdf_path = await asyncio.to_thread(generate_reimbursement_pdf, pdf_data)
+    pdf_path = await asyncio.to_thread(render_reimbursement_pdf, pdf_data)
     try:
         with open(pdf_path, "rb") as f:
             content = f.read()
