@@ -61,8 +61,8 @@ INTENT_CLASSIFY_PROMPT = """你是一个报销意图分类器，分析用户输�
    - expense_standard: 费用标准/限额/能报多少
    - process_guide: 报销流程/怎么报
    - department_quota: 部门额度/预算
-5. document_parse: 识别/解析用户【已上传】的票据文件（OCR）
-6. invoice_generate: 生成/开具/制作一张新的发票或票据 PDF（"生成票据"、"开发票"、"生成pdf票据"、"给某报销单开票"）
+5. document_parse: 识别/解析用户【已上传】的发票/票据文件（OCR，发票仅作为输入数据）
+6. reimbursement_pdf: 为已有报销单生成/下载/打印/导出【报销单】PDF 文件（"生成报销单"、"下载报销单"、"导出报销单PDF"）
 7. approval_action: 审批操作（通过/驳回/退回某个报销单）
 8. general_chat: 其他/闲聊/问候/帮助
 
@@ -70,8 +70,8 @@ INTENT_CLASSIFY_PROMPT = """你是一个报销意图分类器，分析用户输�
 - "查询"、"进度"、"状态"、报销单号 → status_check
 - "所有"、"全部"、"列出"、"记录"、"我的"、按条件筛选 → history_list
 - "撤回"、"撤销"、"取消"、"修改"某报销单 → reimbursement_modify
-- "生成票据/发票"、"开发票/开票"、"制作发票" → invoice_generate（生成新票据，不是识别上传票据，也不是新建报销）
-- "识别"、"上传"、"扫描"发票 → document_parse
+- "生成报销单/下载报销单/导出报销单PDF/打印报销单" → reimbursement_pdf（生成结构化报销单据，不是发票）
+- "识别"、"上传"、"扫描"发票 → document_parse（发票是输入，用于提取信息，不是生成）
 - "通过"、"驳回"、"退回"、"批准"某单 → approval_action
 - 标准/限额/流程/额度类咨询 → policy_inquiry（不要误判为新建报销）
 

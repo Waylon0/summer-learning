@@ -51,8 +51,8 @@ class PrimaryIntent(str, Enum):
     REIMBURSEMENT_QUERY = "reimbursement_query"    # 报销查询
     REIMBURSEMENT_MODIFY = "reimbursement_modify"  # 修改报销
     POLICY_INQUIRY = "policy_inquiry"              # 政策咨询
-    DOCUMENT_PARSE = "document_parse"               # 票据识别
-    INVOICE_GENERATE = "invoice_generate"           # 生成票据/发票 PDF
+    DOCUMENT_PARSE = "document_parse"               # 票据识别（发票作为输入 OCR）
+    REIMBURSEMENT_PDF = "reimbursement_pdf"         # 生成报销单 PDF（结构化单据）
     APPROVAL_ACTION = "approval_action"             # 审批操作
     GENERAL_CHAT = "general_chat"                   # 闲聊/其他
 
@@ -128,7 +128,7 @@ INTENT_SLOTS_MAP: dict[PrimaryIntent, list[str]] = {
     PrimaryIntent.REIMBURSEMENT_MODIFY: ["reimbursement_id"],
     PrimaryIntent.POLICY_INQUIRY: [],
     PrimaryIntent.DOCUMENT_PARSE: ["file_path"],
-    PrimaryIntent.INVOICE_GENERATE: [],  # 无强制槽位：金额缺省时可从上下文/报销单获取
+    PrimaryIntent.REIMBURSEMENT_PDF: [],  # 无强制槽位：可从上下文/报销单号获取
     PrimaryIntent.APPROVAL_ACTION: ["reimbursement_id", "action"],
     PrimaryIntent.GENERAL_CHAT: [],
 }
@@ -162,7 +162,7 @@ INTENT_ROUTING_MAP: dict[PrimaryIntent, str] = {
     PrimaryIntent.REIMBURSEMENT_MODIFY: "modify_reimbursement",
     PrimaryIntent.POLICY_INQUIRY: "policy_lookup",
     PrimaryIntent.DOCUMENT_PARSE: "entity_extraction",
-    PrimaryIntent.INVOICE_GENERATE: "generate_invoice",
+    PrimaryIntent.REIMBURSEMENT_PDF: "generate_reimbursement_doc",
     PrimaryIntent.APPROVAL_ACTION: "approval_process",
     PrimaryIntent.GENERAL_CHAT: "general_response",
 }
@@ -255,14 +255,13 @@ _LEGACY_KEYWORD_INTENT_MAP = {
     "票据": (PrimaryIntent.DOCUMENT_PARSE, SubIntent.NONE),
 
     # 票据生成（开具/生成新的发票 PDF）
-    "生成票据": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "生成发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "生成pdf票据": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "开具发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "开发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "开票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "制作发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
-    "生成一张发票": (PrimaryIntent.INVOICE_GENERATE, SubIntent.NONE),
+    "生成报销单": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
+    "报销单pdf": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
+    "生成pdf": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
+    "下载报销单": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
+    "打印报销单": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
+    "导出报销单": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
+    "生成单据": (PrimaryIntent.REIMBURSEMENT_PDF, SubIntent.NONE),
 }
 
 

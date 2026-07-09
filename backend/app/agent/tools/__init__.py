@@ -11,7 +11,6 @@ from app.agent.tools.reimburse_tools import (
     compliance_check,
     budget_check,
     generate_reimbursement_pdf,
-    generate_invoice_pdf,
     send_approval_email,
     save_reimbursement_to_db,
     query_reimbursement_status,
@@ -40,11 +39,6 @@ TOOL_DESCRIPTIONS = [
         "name": "generate_reimbursement_pdf",
         "description": "生成标准化的中文报销单 PDF 文件，包含公司抬头、基本信息、发票明细、签字区。",
         "parameters": {"reimb_data": "dict — 报销单信息"},
-    },
-    {
-        "name": "generate_invoice_pdf",
-        "description": "生成一张模拟的中国增值税发票 PDF（票据），含发票代码/号码、购销双方、货物明细、价税合计大写。用于测试/演示/补录票据场景。",
-        "parameters": {"invoice_data": "dict — 发票信息(invoice_code/number/date, buyer/seller, amount/tax_amount, items 等)"},
     },
     {
         "name": "send_approval_email",
@@ -76,7 +70,7 @@ TOOL_DESCRIPTIONS = [
 __all__ = [
     "ALL_TOOLS", "TOOL_DESCRIPTIONS",
     "ocr_recognize_invoice", "compliance_check", "budget_check",
-    "generate_reimbursement_pdf", "generate_invoice_pdf", "send_approval_email",
+    "generate_reimbursement_pdf", "send_approval_email",
     "save_reimbursement_to_db", "query_reimbursement_status",
     "get_current_user_info",
 ]

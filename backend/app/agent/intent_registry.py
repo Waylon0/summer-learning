@@ -204,18 +204,18 @@ INTENT_SPECS: list[IntentSpec] = [
         extra_slots=["file_path"],
     ),
 
-    # ---------------- 票据生成 ----------------
+    # ---------------- 报销单 PDF 生成 ----------------
     IntentSpec(
-        primary=PrimaryIntent.INVOICE_GENERATE, sub=SubIntent.NONE,
-        label="票据生成",
-        priority_keywords=["生成发票", "生成票据", "生成pdf票据", "开具发票",
-                           "开发票", "开票", "制作发票", "出具发票"],
-        keywords=[],
+        primary=PrimaryIntent.REIMBURSEMENT_PDF, sub=SubIntent.NONE,
+        label="报销单PDF生成",
+        priority_keywords=["生成报销单", "报销单pdf", "下载报销单", "打印报销单",
+                           "导出报销单", "生成pdf", "报销单文件"],
+        keywords=["生成单据", "导出单据"],
         examples=[
-            "帮我生成一张发票",
-            "为这个报销单开一张票据",
-            "制作一张1500元的差旅费发票",
-            "能不能弄一张电子发票",
+            "帮我生成这个报销单的PDF",
+            "下载报销单 6441a34d",
+            "把刚才的报销单导出成PDF",
+            "打印一下我的报销单据",
         ],
     ),
 

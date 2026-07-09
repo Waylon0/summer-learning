@@ -403,7 +403,7 @@ def route_by_intent(
     state: ReimburseState
 ) -> Literal[
     "entity_extraction", "query_status", "policy_lookup",
-    "approval_process", "generate_invoice",
+    "approval_process", "generate_reimbursement_doc",
     "modify_reimbursement", "general_response"
 ]:
     """根据一级意图路由到对应节点"""
@@ -1209,19 +1209,25 @@ async def approval_process(state: ReimburseState) -> dict:
     ))]}
 
 
-async def generate_invoice(state: ReimburseState) -> dict:
+async def generate_reimbursement_doc(state: ReimburseState) -> dict:
     """
-    生成一张模拟增值税发票 PDF 并返回下载链接。
+    为一张【已存在的报销单】生成结构化报销单 PDF 并返回下载链接。
 
-    金额/类型/部门来源优先级:
-      1. 用户消息中直接提到的金额（如"生成1500元的发票"）
-      2. 若引用了报销单号 → 用该报销单的金额/类型/部门（含权限校验）
-      3. 会话上下文中最近一次的金额/类型
+    报销单号来源优先级:
+      1. 用户消息 / 实体中明确的报销单号
+      2. 本次会话上下文中最近创建的报销单号（state.reimb_id）
+    权限:
+      - employee: 仅可为本人报销单生成
+      - manager : 仅可为本部门报销单生成
+      - admin/finance: 全部
+    注意: 系统不再生成"发票"，发票仅作为输入数据供 OCR 提取。
     """
-    import asyncio
-    from app.agent.entities import _extract_amount, _extract_uuid
-    from app.agent.tools.reimburse_tools import generate_invoice_pdf
-    from app.services.ocr_svc import upload_file, get_file_url
+    from app.agent.entities import _extract_uuid
+    from app.core.database import AsyncSessionLocal
+    from app.services.reimbursement_svc import ReimbursementService
+    from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+    from app.core.exceptions import ReimbursementNotFoundError
+    from app.agent.query_planner import STATUS_LABELS, TYPE_LABELS
 
     messages_list = state.get("messages", [])
     last_msg = messages_list[-1].content if messages_list else ""
@@ -1231,95 +1237,51 @@ async def generate_invoice(state: ReimburseState) -> dict:
     user_role = (state.get("user_role", "") or "").lower()
     user_department = state.get("user_department", "")
 
-    amount = 0.0
-    expense_type = state.get("expense_type", "") or entities.get("expense_type", "")
-    department = state.get("department", "") or user_department
-    seller_name = ""
-    description = state.get("description", "") or entities.get("description", "")
-
-    # --- 来源2：引用了报销单号 → 取该单信息（带权限校验）---
-    reimb_id = state.get("reimb_id", "") or entities.get("reimbursement_id", "") or _extract_uuid(last_msg)
-    if reimb_id:
-        from app.agent.tools.reimburse_tools import query_reimbursement_status as _qstatus
-        result = await _qstatus(reimb_id=reimb_id)
-        if result.get("status") not in ("not_found", "unknown"):
-            # 权限校验：员工只能给自己的单开票，经理限本部门
-            owner_uid = result.get("user_id", "")
-            owner_dept = result.get("department", "")
-            if user_role == "employee" and owner_uid and owner_uid != user_id:
-                return {"messages": [AIMessage(content="⛔ 您只能为本人的报销单生成票据。")]}
-            if user_role == "manager" and owner_dept and owner_dept != user_department:
-                return {"messages": [AIMessage(content=f"⛔ 您只能为本部门（{user_department}）的报销单生成票据。")]}
-            if user_role not in ("employee", "manager", "admin", "finance"):
-                return {"messages": [AIMessage(content="⛔ 您尚未登录，无法生成票据。")]}
-            amount = float(result.get("total_amount", 0) or 0)
-            expense_type = expense_type or result.get("expense_type", "")
-            department = result.get("department", "") or department
-            description = description or result.get("description", "")
-
-    # --- 来源1：消息里直接给了金额（优先级最高，覆盖）---
-    msg_amount = _extract_amount(last_msg) if any(k in last_msg for k in ["元", "¥", "￥"]) else 0.0
-    if msg_amount > 0:
-        amount = msg_amount
-
-    # --- 来源3：上下文兜底 ---
-    if amount <= 0:
-        amount = float(state.get("total_amount", 0) or 0)
-
-    if amount <= 0:
+    # 报销单号：消息/实体 > 会话上下文最近一单
+    reimb_id = (
+        _extract_uuid(last_msg)
+        or entities.get("reimbursement_id", "")
+        or state.get("reimb_id", "")
+    )
+    if not reimb_id:
         return {"messages": [AIMessage(content=(
-            "请告诉我要生成票据的金额，例如：\"生成一张 1500 元的差旅费发票\"，"
-            "或指定报销单号：\"为报销单 6441a34d 生成票据\"。"
+            "请提供要生成报销单 PDF 的报销单号，例如：\"下载报销单 6441a34d\"。\n"
+            "如果您刚提交了报销，可以直接说\"生成刚才的报销单PDF\"。"
         ))]}
 
-    # 费用类型 → 明细行名称
-    type_labels = {
-        "travel": "差旅费", "entertainment": "招待费", "office": "办公用品",
-        "communication": "通信费", "transport": "交通费", "meeting": "会议费",
-        "training": "培训费", "other": "服务费",
-    }
-    item_name = description or type_labels.get(expense_type, "服务费")
-
-    invoice_dict = {
-        "buyer_name": "中国石油华东分公司",
-        "seller_name": seller_name or "某某供应商有限公司",
-        "invoice_date": "",
-        "items": [{
-            "name": item_name, "specification": "", "unit": "项",
-            "quantity": 1, "unit_price": amount, "amount": amount, "tax_rate": "",
-        }],
-        "amount": amount,
-        "tax_amount": 0.0,
-        "total_with_tax": amount,
-        "remarks": f"报销单号: {reimb_id}" if reimb_id else "",
-    }
-
-    # 生成 PDF（放线程池），存储，返回下载链接
-    try:
-        pdf_path = await asyncio.to_thread(generate_invoice_pdf, invoice_dict)
-        with open(pdf_path, "rb") as f:
-            content = f.read()
-        import os as _os
-        object_name = await upload_file(content, _os.path.basename(pdf_path), "application/pdf")
-        download_url = await get_file_url(object_name)
+    async with AsyncSessionLocal() as db:
+        svc = ReimbursementService(db)
         try:
-            _os.remove(pdf_path)
-        except OSError:
-            pass
-    except Exception as e:
-        logger.error(f"发票生成失败: {e}")
-        return {"messages": [AIMessage(content="⚠️ 票据生成失败，请稍后重试。")]}
+            reimb = await svc.get_by_id(reimb_id)
+        except ReimbursementNotFoundError:
+            return {"messages": [AIMessage(content=f"📋 未找到报销单 {reimb_id}。")]}
 
-    inv_no = invoice_dict.get("invoice_number", "")
-    logger.info(f"Invoice generated via agent: no={inv_no} amount={amount} object={object_name}")
+        # 权限校验
+        if user_role == "employee" and reimb.user_id != user_id:
+            return {"messages": [AIMessage(content="⛔ 您只能为本人的报销单生成 PDF。")]}
+        if user_role == "manager" and reimb.department != user_department:
+            return {"messages": [AIMessage(content=f"⛔ 您只能为本部门（{user_department}）的报销单生成 PDF。")]}
+        if user_role not in ("employee", "manager", "admin", "finance"):
+            return {"messages": [AIMessage(content="⛔ 您尚未登录，无法生成报销单 PDF。")]}
+
+        try:
+            info = await generate_and_store_reimbursement_pdf(reimb)
+        except Exception as e:
+            logger.error(f"报销单 PDF 生成失败: {e}")
+            return {"messages": [AIMessage(content="⚠️ 报销单 PDF 生成失败，请稍后重试。")]}
+
+    type_cn = TYPE_LABELS.get(reimb.expense_type, reimb.expense_type)
+    status_cn = STATUS_LABELS.get(reimb.status, reimb.status)
+    logger.info(f"Reimbursement PDF generated via agent: reimb={reimb_id} object={info['object_name']}")
     return {"messages": [AIMessage(content=(
-        f"🧾 发票已生成！\n"
-        f"• 发票号码: {inv_no}\n"
-        f"• 项目: {item_name}\n"
-        f"• 价税合计: ¥{amount:,.2f}\n"
-        + (f"• 关联报销单: {reimb_id}\n" if reimb_id else "")
-        + f"• 下载地址: {download_url}\n"
-        f"（注：此为系统生成的模拟票据，仅供测试演示）"
+        f"📄 报销单 PDF 已生成！\n"
+        f"• 报销单号: {reimb.id}\n"
+        f"• 申请人: {reimb.user_name}\n"
+        f"• 部门: {reimb.department}\n"
+        f"• 费用类型: {type_cn}\n"
+        f"• 金额: ¥{float(reimb.total_amount):,.2f}\n"
+        f"• 状态: {status_cn}\n"
+        f"• 下载地址: {info['download_url']}"
     ))]}
 
 
@@ -1500,7 +1462,7 @@ def build_graph():
         ("send_email", send_email),
         ("query_status", query_status),
         ("approval_process", approval_process),
-        ("generate_invoice", generate_invoice),
+        ("generate_reimbursement_doc", generate_reimbursement_doc),
         ("modify_reimbursement", modify_reimbursement),
         ("policy_lookup", policy_lookup),
         ("general_response", general_response),
@@ -1517,7 +1479,7 @@ def build_graph():
         "query_status": "query_status",
         "policy_lookup": "policy_lookup",
         "approval_process": "approval_process",
-        "generate_invoice": "generate_invoice",
+        "generate_reimbursement_doc": "generate_reimbursement_doc",
         "modify_reimbursement": "modify_reimbursement",
         "general_response": "general_response",
     })
@@ -1563,7 +1525,7 @@ def build_graph():
     builder.add_edge("modify_reimbursement", END)
     builder.add_edge("policy_lookup", END)
     builder.add_edge("approval_process", END)
-    builder.add_edge("generate_invoice", END)
+    builder.add_edge("generate_reimbursement_doc", END)
     builder.add_edge("general_response", END)
 
     return builder.compile()

@@ -87,36 +87,17 @@ class InvoiceInfo(BaseModel):
 
 
 # =============================================================================
-# 2b. 发票生成（票据生成）请求 / 响应
+# 2b. 报销单 PDF 生成响应
 # =============================================================================
-class InvoiceGenerateRequest(BaseModel):
-    """生成模拟增值税发票 PDF 的请求体（所有字段可选，缺省自动补全）"""
-    invoice_code: str = ""                        # 发票代码（留空自动生成 12 位）
-    invoice_number: str = ""                      # 发票号码（留空自动生成 8 位）
-    invoice_date: Optional[str] = None            # 开票日期 YYYY-MM-DD（默认今天）
-    invoice_type: str = "增值税普通发票"           # 发票类型
-    buyer_name: str = ""                          # 购买方名称（默认公司抬头）
-    buyer_tax_id: str = ""                        # 购买方税号
-    seller_name: str = ""                         # 销售方名称
-    seller_tax_id: str = ""                       # 销售方税号
-    amount: Optional[float] = None                # 不含税金额（缺省由 items 汇总）
-    tax_amount: float = 0.0                       # 税额
-    total_with_tax: Optional[float] = None        # 价税合计（缺省 = amount + tax_amount）
-    items: list[InvoiceLineItem] = []             # 货物/劳务明细
-    remarks: str = ""                             # 备注
-    payee: str = ""                               # 收款人
-    reviewer: str = ""                            # 复核人
-    drawer: str = ""                              # 开票人
-
-
-class InvoiceGenerateResponse(BaseModel):
-    """发票生成结果"""
-    invoice_number: str                           # 发票号码
-    invoice_code: str                             # 发票代码
-    object_name: str                              # 存储对象路径（可用于后续报销 attachments）
+# 说明：发票（invoice）在本系统中仅作为「输入数据」用于 OCR 提取，
+#       系统对外生成的结构化单据是「报销单 PDF」。
+class ReimbursementPdfResponse(BaseModel):
+    """报销单 PDF 生成结果"""
+    reimb_id: str                                 # 报销单号
+    object_name: str                              # 存储对象路径
     download_url: str                             # 下载/预览地址
-    total_with_tax: float                         # 价税合计
-    status: str = "generated"
+    total_amount: float                           # 报销总额
+    status: str = "generated"                     # 生成状态
 
 
 # =============================================================================

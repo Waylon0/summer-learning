@@ -15,8 +15,12 @@ from loguru import logger
 from app.core.database import get_db, engine
 from app.core.deps import get_current_user
 from app.services.reimbursement_svc import ReimbursementService
-from app.schemas.reimbursement import ReimbursementCreate, ReimbursementResponse
+from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+from app.schemas.reimbursement import (
+    ReimbursementCreate, ReimbursementResponse, ReimbursementPdfResponse,
+)
 from app.models.user import User
+from app.core.exceptions import InternalErrorException
 
 router = APIRouter(prefix="/reimbursements", tags=["reimbursements"])
 
@@ -127,6 +131,38 @@ async def cancel_reimbursement(
 
     logger.info(f"报销单撤销: {reimb_id} by {user.username}")
     return {"reimb_id": reimb_id, "status": "cancelled", "message": "报销单已撤销"}
+
+
+@router.post("/{reimb_id}/pdf", response_model=ReimbursementPdfResponse)
+async def generate_reimbursement_pdf_endpoint(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    生成报销单结构化 PDF 并返回下载地址。
+
+    权限:
+      - employee: 仅可为本人报销单生成
+      - manager : 仅可为本部门报销单生成
+      - admin/finance: 全部
+    """
+    svc = ReimbursementService(db)
+    reimb = await svc.get_by_id(reimb_id)  # 不存在 → 404
+
+    if user.role == "employee" and reimb.user_id != user.id:
+        raise HTTPException(status_code=403, detail="只能为本人的报销单生成 PDF")
+    if user.role == "manager" and reimb.department != user.department:
+        raise HTTPException(status_code=403, detail=f"无权为{reimb.department}的报销单生成 PDF")
+
+    try:
+        info = await generate_and_store_reimbursement_pdf(reimb)
+    except Exception as e:
+        logger.error(f"报销单 PDF 生成失败: {e}")
+        raise InternalErrorException(message="报销单 PDF 生成失败", detail={"error": str(e)})
+
+    logger.info(f"报销单 PDF 生成: {reimb_id} by {user.username} → {info['object_name']}")
+    return ReimbursementPdfResponse(**info)
 
 
 def _to_response(reimb) -> ReimbursementResponse:

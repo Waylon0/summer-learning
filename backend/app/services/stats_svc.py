@@ -13,12 +13,22 @@ app/services/stats_svc.py — 统计与发票台账业务逻辑层
   - 月份分桶在 Python 中完成，避免 to_char / strftime 的方言差异。
 =============================================================================
 """
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+
+
+def _to_dt(d: date) -> datetime:
+    """把 date 转成带时区的 datetime（当天 00:00 UTC）。
+
+    PostgreSQL 的 created_at 是 TIMESTAMPTZ，直接与字符串比较会报
+    'operator does not exist: timestamp with time zone >= character varying'，
+    因此所有区间比较统一使用 timezone-aware datetime。
+    """
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 from app.models.reimbursement import Reimbursement, Invoice, DepartmentBudget
 from app.models.user import User
@@ -105,11 +115,12 @@ class StatsService:
         """近 N 个月费用趋势，按费用类型分色"""
         months = max(1, min(months, 24))
         month_list = _last_n_months(months)
-        start_date = f"{month_list[0]}-01"
+        first_y, first_m = int(month_list[0][:4]), int(month_list[0][5:7])
+        start_dt = _to_dt(date(first_y, first_m, 1))
 
         conditions = [
             Reimbursement.status.in_(_ACTIVE_STATUS),
-            Reimbursement.created_at >= start_date,
+            Reimbursement.created_at >= start_dt,
         ]
         if department:
             conditions.append(Reimbursement.department == department)
@@ -187,8 +198,8 @@ class StatsService:
                     func.coalesce(func.sum(Reimbursement.total_amount), 0),
                 ).where(
                     Reimbursement.user_id == user_id,
-                    Reimbursement.created_at >= start.isoformat(),
-                    Reimbursement.created_at < end.isoformat(),
+                    Reimbursement.created_at >= _to_dt(start),
+                    Reimbursement.created_at < _to_dt(end),
                 )
             )
         ).one()
@@ -201,8 +212,8 @@ class StatsService:
                 select(Reimbursement.status, func.count(Reimbursement.id))
                 .where(
                     Reimbursement.user_id == user_id,
-                    Reimbursement.created_at >= start.isoformat(),
-                    Reimbursement.created_at < end.isoformat(),
+                    Reimbursement.created_at >= _to_dt(start),
+                    Reimbursement.created_at < _to_dt(end),
                 )
                 .group_by(Reimbursement.status)
             )
@@ -234,7 +245,7 @@ class StatsService:
                 )
                 .where(
                     Reimbursement.status.in_(_ACTIVE_STATUS),
-                    Reimbursement.created_at >= start.isoformat(),
+                    Reimbursement.created_at >= _to_dt(start),
                 )
                 .group_by(Reimbursement.department)
             )
@@ -303,8 +314,8 @@ class StatsService:
         total = await self.db.scalar(
             select(func.coalesce(func.sum(Reimbursement.total_amount), 0)).where(
                 Reimbursement.status.in_(_ACTIVE_STATUS),
-                Reimbursement.created_at >= start.isoformat(),
-                Reimbursement.created_at < end.isoformat(),
+                Reimbursement.created_at >= _to_dt(start),
+                Reimbursement.created_at < _to_dt(end),
             )
         )
         return float(total or 0)
