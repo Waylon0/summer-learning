@@ -28,6 +28,60 @@ const quickPrompts = [
   '列出我的报销记录',
 ];
 
+// 链接匹配：完整 URL + 相对路径 API 链接
+const URL_RE = /((?:https?:\/\/|\/api\/)[^\s<>"'\n]*)/g;
+
+function resolveUrl(raw: string): string {
+  if (raw.startsWith('http')) return raw;
+  const base = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/api\/v1\/?$/, '');
+  return base + raw;
+}
+
+function renderMessageContent(text: string) {
+  const parts: React.ReactNode[] = [];
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = URL_RE.exec(text)) !== null) {
+    if (match.index > lastIdx) {
+      parts.push(text.slice(lastIdx, match.index));
+    }
+    const raw = match[0];
+    const url = resolveUrl(raw);
+    const isPdf = /\.pdf(\?|$)/i.test(raw) || /reimburse-attachments/i.test(raw) || /upload\/files/i.test(raw);
+
+    if (isPdf) {
+      parts.push(
+        <span key={match.index} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, margin: '2px 0' }}>
+          <a href={url} target="_blank" rel="noreferrer"
+            style={{
+              display: 'inline-block', padding: '3px 12px',
+              background: '#e6f4ff', border: '1px solid #91caff',
+              borderRadius: 6, color: '#1677ff', fontWeight: 500,
+              fontSize: 13, textDecoration: 'none',
+            }}
+          >
+            📄 点击预览
+          </a>
+          <a href={url} download style={{
+            display: 'inline-block', padding: '3px 12px',
+            background: '#f5f5f5', border: '1px solid #d9d9d9',
+            borderRadius: 6, color: '#555', fontWeight: 500,
+            fontSize: 13, textDecoration: 'none',
+          }}>
+            📥 点击下载
+          </a>
+        </span>,
+      );
+    } else {
+      parts.push(<a key={match.index} href={url} target="_blank" rel="noreferrer">{raw}</a>);
+    }
+    lastIdx = match.index + match[0].length;
+  }
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+  return parts.length > 0 ? parts : text;
+}
+
 function ThinkingPanel({ steps, live }: { steps: ThinkingStep[]; live?: boolean }) {
   if (!steps || steps.length === 0) return null;
   return (
@@ -323,7 +377,7 @@ export default function ChatReimbursement() {
                   border: msg.role === 'assistant' ? '1px solid #e8e8e8' : 'none',
                   whiteSpace: 'pre-wrap', lineHeight: 1.7, fontSize: 14, marginTop: 6,
                 }}>
-                  {msg.content || (streaming && idx === messages.length - 1 ? '思考中…' : '')}
+                  {renderMessageContent(msg.content) || (streaming && idx === messages.length - 1 ? '思考中…' : '')}
                   {streaming && msg.role === 'assistant' && idx === messages.length - 1 && (
                     <LoadingOutlined style={{ marginLeft: 8 }} spin />
                   )}
