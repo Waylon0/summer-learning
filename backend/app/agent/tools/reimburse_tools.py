@@ -344,6 +344,7 @@ async def budget_check(department: str, amount: float) -> dict:
     """
     from sqlalchemy import text
     bud = None
+    db_error = False
     try:
         async with engine.connect() as conn:
             result = await conn.execute(
@@ -362,10 +363,29 @@ async def budget_check(department: str, amount: float) -> dict:
                     "remaining": float(row.annual_budget - row.used_amount),
                 }
     except Exception as e:
-        logger.warning(f"DB query failed for department={department}: {e}")
+        db_error = True
+        logger.error(f"预算查询数据库故障 department={department}: {e}")
 
+    # 数据库故障：明确报错，绝不编造假数据（否则会导致错误的预算判断/超支）
+    if db_error:
+        return {
+            "department": department,
+            "available": False,
+            "error": "budget_db_unavailable",
+            "message": "预算数据库暂时不可用，无法核对部门预算，请稍后重试。",
+            "need_special_approval": False,
+        }
+
+    # 部门无预算记录：同样明确提示，而非默认给 5 万额度
     if bud is None:
-        bud = {"department": department, "annual_budget": 100000, "used": 50000, "remaining": 50000}
+        logger.warning(f"部门无预算记录: {department}")
+        return {
+            "department": department,
+            "available": False,
+            "error": "budget_not_found",
+            "message": f"未找到部门「{department}」的预算配置，请联系财务部先配置预算。",
+            "need_special_approval": False,
+        }
 
     after = bud["remaining"] - amount
     exceeded = after < 0
@@ -375,6 +395,7 @@ async def budget_check(department: str, amount: float) -> dict:
     )
     return {
         "department": department,
+        "available": True,
         "annual_budget": bud["annual_budget"],
         "used": bud["used"],
         "remaining": bud["remaining"],

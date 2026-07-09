@@ -64,7 +64,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # ===================== 安全配置 =====================
-    JWT_SECRET_KEY: str = "reimburse-agent-dev-secret-change-in-production"
+    # JWT 密钥：优先从环境变量 / .env 读取，避免在源码中写死真实密钥。
+    # 若未配置则使用带 "INSECURE" 标记的开发占位符，并在启动时告警。
+    JWT_SECRET_KEY: str = os.getenv(
+        "JWT_SECRET_KEY",
+        "INSECURE-DEV-KEY-please-set-JWT_SECRET_KEY-in-env",
+    )
 
     # ===================== NLP / 意图理解配置 =====================
     # 中文语义 embedding 后端: auto | sentence_transformers | chromadb | none

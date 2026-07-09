@@ -100,8 +100,16 @@ def _run_async(coro):
         return future.result()
 
 settings = get_settings()
-_llm_available = False if "sk-xxx" in settings.OPENAI_API_KEY else None
+# 是否配置了有效的 API Key（唯一的"永久"开关：仅当 Key 为占位符时才认为未配置）。
+# 注意：不再使用运行时"熔断"永久禁用 LLM —— 每次调用都会重新尝试，
+# 单次失败只影响该次请求，网络恢复后自动自愈。
+_LLM_CONFIGURED = "sk-xxx" not in settings.OPENAI_API_KEY
 llm = None
+
+
+def llm_configured() -> bool:
+    """LLM 是否已配置可用（供节点判断是否需要提示服务不可用）。"""
+    return _LLM_CONFIGURED
 
 
 def _get_llm():
@@ -114,50 +122,39 @@ def _get_llm():
             api_key=settings.OPENAI_API_KEY,
             base_url=settings.OPENAI_BASE_URL,
             temperature=0.1,
-            request_timeout=5,
-            max_retries=1,
+            request_timeout=15,
+            max_retries=2,
         )
     return llm
 
 
 def _try_llm(messages: list) -> str:
-    """尝试调用 LLM，失败静默降级（同步版）"""
-    global _llm_available
-    if _llm_available is False:
+    """尝试调用 LLM（同步版）。每次都真实尝试，失败仅影响本次调用。"""
+    if not _LLM_CONFIGURED:
         return ""
     try:
         resp = _get_llm().invoke(messages)
-        _llm_available = True
         return resp.content
     except Exception as e:
-        if _llm_available is None:
-            logger.warning(f"LLM unavailable (sync): {e}")
-        if any(k in str(e).lower() for k in ["connect", "resolve", "refused", "timeout"]):
-            _llm_available = False
+        logger.warning(f"LLM call failed (sync, will retry next time): {str(e)[:150]}")
         return ""
 
 
 async def _try_llm_async(messages: list) -> str:
-    """尝试调用 LLM，失败静默降级（异步版）"""
-    global _llm_available
-    if _llm_available is False:
+    """尝试调用 LLM（异步版）。每次都真实尝试，失败仅影响本次调用，不永久禁用。"""
+    if not _LLM_CONFIGURED:
         return ""
     try:
         resp = await _get_llm().ainvoke(messages)
-        _llm_available = True
         return resp.content
     except Exception as e:
-        if _llm_available is None:
-            logger.warning(f"LLM unavailable (async): {e}")
-        if any(k in str(e).lower() for k in ["connect", "resolve", "refused", "timeout"]):
-            _llm_available = False
+        logger.warning(f"LLM call failed (async, will retry next time): {str(e)[:150]}")
         return ""
 
 
 async def _try_llm_structured(messages: list, output_schema: type) -> dict | None:
-    """Try LLM with Pydantic structured output, fallback on failure"""
-    global _llm_available
-    if _llm_available is False:
+    """LLM 结构化输出。每次都真实尝试，失败仅影响本次调用。"""
+    if not _LLM_CONFIGURED:
         return None
     try:
         from langchain_openai import ChatOpenAI
@@ -166,25 +163,17 @@ async def _try_llm_structured(messages: list, output_schema: type) -> dict | Non
             api_key=settings.OPENAI_API_KEY,
             base_url=settings.OPENAI_BASE_URL,
             temperature=0,
-            request_timeout=10,
-            max_retries=1,
+            request_timeout=15,
+            max_retries=2,
         ).with_structured_output(output_schema, method="json_mode")
         resp = await structured_llm.ainvoke(messages)
-        _llm_available = True
         if isinstance(resp, dict):
             return resp
         if hasattr(resp, "model_dump"):
             return resp.model_dump()
         return resp
     except Exception as e:
-        err_msg = str(e)
-        # Only mark LLM as unavailable on connection errors, not parse failures
-        if _llm_available is None:
-            if "parse" in err_msg.lower() or "validation" in err_msg.lower() or "pydantic" in err_msg.lower():
-                logger.info(f"LLM structured parse error (LLM still available): {err_msg[:120]}")
-            else:
-                logger.warning(f"LLM structured unavailable: {e}")
-                _llm_available = False
+        logger.info(f"LLM structured call failed (will retry next time): {str(e)[:150]}")
         return None
 
 
@@ -213,11 +202,13 @@ class ReimburseState(TypedDict):
     compliance_result: dict
     budget_result: dict
     need_special_approval: bool
+    budget_unavailable: bool
     # 输出
     invoices: list[dict]
     pdf_path: str
     status: str
     reimb_id: str
+    save_failed: bool
     attachments: list[str]
     user_id: str
     user_name: str
@@ -412,7 +403,7 @@ def route_by_intent(
     state: ReimburseState
 ) -> Literal[
     "entity_extraction", "query_status", "policy_lookup",
-    "ocr_invoice", "approval_process", "generate_invoice",
+    "approval_process", "generate_invoice",
     "modify_reimbursement", "general_response"
 ]:
     """根据一级意图路由到对应节点"""
@@ -571,6 +562,7 @@ def pre_validation(state: ReimburseState) -> dict:
             error_code="VALIDATION_FAILED",
         ).message)
         return {
+            "validation_result": {"passed": False, "errors": result.errors},
             "messages": [AIMessage(content=f"⚠️ 校验未通过:\n{errors_text}")],
         }
 
@@ -580,7 +572,7 @@ def pre_validation(state: ReimburseState) -> dict:
         )
 
     logger.info("Pre-validation passed")
-    return {}
+    return {"validation_result": {"passed": True, "errors": []}}
 
 
 def route_after_validation(state: ReimburseState) -> Literal["ocr_invoice", "slot_filling"]:
@@ -693,20 +685,32 @@ async def budget_control(state: ReimburseState) -> dict:
     department = state.get("department") or ""
     total = state.get("total_amount") or 0
     result = await budget_check(department=department, amount=total)
+    # 预算数据不可用（DB 故障 / 部门无预算配置）→ 明确提示，不继续入库
+    if not result.get("available", True):
+        logger.warning(f"Budget unavailable: {department} reason={result.get('error')}")
+        return {
+            "budget_result": result,
+            "need_special_approval": False,
+            "budget_unavailable": True,
+            "messages": [AIMessage(content=f"⚠️ {result.get('message', '预算核对失败，请稍后重试。')}")],
+        }
     need = result.get("need_special_approval", False)
     logger.info(f"Budget: {department} amount={total} exceeded={need}")
-    return {"budget_result": result, "need_special_approval": need}
+    return {"budget_result": result, "need_special_approval": need, "budget_unavailable": False}
 
 
 # =============================================================================
 # 预算检查后的路由
 # =============================================================================
-def route_after_budget(state: ReimburseState) -> Literal["save_to_db", "rejection_response"]:
+def route_after_budget(state: ReimburseState) -> Literal["save_to_db", "rejection_response", "halt"]:
     """
     预算检查后的路由:
+      - 预算不可用 → halt（已给出提示，直接结束）
       - 硬拒绝 → rejection_response（不保存）
       - 超标/正常 → save_to_db（先入库再继续）
     """
+    if state.get("budget_unavailable"):
+        return "halt"
     compliance = state.get("compliance_result") or {}
     if compliance and compliance.get("passed") is False:
         return "rejection_response"
@@ -747,17 +751,26 @@ async def save_to_db(state: ReimburseState) -> dict:
         f"amount={total_amount} special={need_special}"
     )
 
-    result = await save_reimbursement_to_db(
-        department=department,
-        expense_type=expense_type,
-        total_amount=total_amount,
-        invoices=invoices,
-        need_special_approval=need_special,
-        budget_remaining_after=budget_remaining,
-        description=description,
-        user_id=user_id,
-        user_name=user_name,
-    )
+    try:
+        result = await save_reimbursement_to_db(
+            department=department,
+            expense_type=expense_type,
+            total_amount=total_amount,
+            invoices=invoices,
+            need_special_approval=need_special,
+            budget_remaining_after=budget_remaining,
+            description=description,
+            user_id=user_id,
+            user_name=user_name,
+        )
+    except Exception as e:
+        logger.error(f"报销单入库失败: {e}")
+        return {
+            "status": "error",
+            "reimb_id": "",
+            "save_failed": True,
+            "messages": [AIMessage(content="⚠️ 报销单保存失败，数据库暂时不可用，请稍后重试。")],
+        }
 
     reimb_id = result.get("reimb_id", "")
     logger.info(f"Saved: reimb_id={reimb_id}")
@@ -765,12 +778,15 @@ async def save_to_db(state: ReimburseState) -> dict:
     return {
         "status": result.get("status", "pending"),
         "reimb_id": reimb_id,
+        "save_failed": False,
         "messages": [AIMessage(content=f"✅ 报销单已创建 (单号: {reimb_id})")],
     }
 
 
-def route_after_save(state: ReimburseState) -> Literal["special_approval", "generate_pdf"]:
-    """保存后根据是否超标决定下一步"""
+def route_after_save(state: ReimburseState) -> Literal["special_approval", "generate_pdf", "halt"]:
+    """保存后：失败→结束；超标→特殊审批；正常→生成PDF"""
+    if state.get("save_failed"):
+        return "halt"
     if state.get("need_special_approval", False):
         return "special_approval"
     return "generate_pdf"
@@ -832,53 +848,90 @@ async def policy_lookup(state: ReimburseState) -> dict:
 # =============================================================================
 # 节点 8-11：审批/生成/邮件/拒绝
 # =============================================================================
-def special_approval(state: ReimburseState) -> dict:
-    """标记特殊审批 —— 预算超标时触发"""
+async def special_approval(state: ReimburseState) -> dict:
+    """
+    标记特殊审批 —— 预算超标时触发（此时报销单已入库，need_special_approval=True）。
+    追加一条审批流转记录，标记进入财务总监特批队列。
+    """
     logger.warning("Budget exceeded — special approval required")
+    reimb_id = state.get("reimb_id", "")
+    department = state.get("department", "")
+    total = state.get("total_amount", 0)
+
+    # 追加特殊审批流转记录（幂等失败不阻断主流程）
+    if reimb_id:
+        try:
+            from app.core.database import engine
+            from sqlalchemy import text
+            import uuid as _uuid
+            async with engine.begin() as conn:
+                step_row = await conn.execute(
+                    text("SELECT COALESCE(MAX(step),0)+1 AS s FROM approval_records WHERE reimbursement_id = :rid"),
+                    {"rid": reimb_id},
+                )
+                step = step_row.fetchone().s
+                await conn.execute(text("""
+                    INSERT INTO approval_records (id, reimbursement_id, approver, step, action, comment)
+                    VALUES (:id, :rid, '财务总监', :step, 'pending', '预算超标，转特殊审批队列')
+                """), {"id": _uuid.uuid4().hex[:12], "rid": reimb_id, "step": step})
+            logger.info(f"Special approval record added: reimb={reimb_id}")
+        except Exception as e:
+            logger.error(f"特殊审批记录写入失败（不阻断）: {e}")
+
     return {"messages": [AIMessage(
         content=(
             f"⚠️ 预算超标！该报销已标记为特殊审批流程。\n"
-            f"部门: {state.get('department','')}\n"
-            f"金额: ¥{state.get('total_amount',0):,.2f}\n"
-            f"请等待财务总监额外审批。"
+            f"报销单号: {reimb_id}\n"
+            f"部门: {department}\n"
+            f"金额: ¥{total:,.2f}\n"
+            f"已转财务总监特批队列，请等待额外审批。"
         )
     )]}
 
 
 def rejection_response(state: ReimburseState) -> dict:
-    """硬拒绝响应 —— 违反 Level 1 规则时"""
+    """
+    硬拒绝响应 —— 违反 Level 1 合规规则时（发生在入库之前，故无需更新数据库）。
+    记录违规日志并向用户说明原因。
+    """
     from app.core.exceptions import ComplianceViolationError
     compliance = state.get("compliance_result") or {}
     errors = compliance.get("errors", ["违反公司费用政策"]) if compliance else ["校验未通过"]
     reasons = "\n".join(f"• {e}" for e in errors)
     total = state.get("total_amount", 0)
     etype = state.get("expense_type", "other")
+    department = state.get("department", "")
     logger.error(
-        ComplianceViolationError(expense_type=etype, amount=total, limit=50000).message
+        f"报销被拒(合规): dept={department} type={etype} amount={total} reasons={errors}"
     )
-    return {"messages": [AIMessage(
-        content=f"🚫 报销申请被拒绝，原因:\n{reasons}"
+    return {"status": "rejected", "messages": [AIMessage(
+        content=f"🚫 报销申请被拒绝，原因:\n{reasons}\n\n如有疑问请联系财务部，或修正后重新提交。"
     )]}
 
 
 async def generate_pdf(state: ReimburseState) -> dict:
-    """生成 PDF 报销单（CPU 密集型任务放线程池，不阻塞事件循环）"""
+    """生成 PDF 报销单（CPU 密集型任务放线程池，不阻塞事件循环）。失败时不阻断流程。"""
     import asyncio
     total = state.get("total_amount", 0)
     invoices = state.get("invoices") or []
 
-    path = await asyncio.to_thread(
-        generate_reimbursement_pdf,
-        reimb_data={
-            "id": state.get("reimb_id", state.get("session_id", "unknown")),
-            "department": state.get("department", ""),
-            "expense_type": state.get("expense_type", ""),
-            "total_amount": total,
-            "invoices": invoices,
-        },
-    )
-    logger.info(f"PDF: {path}")
-    return {"pdf_path": str(path), "messages": [AIMessage(content=f"📄 报销单已生成，总金额: ¥{total:,.2f}")]}
+    try:
+        path = await asyncio.to_thread(
+            generate_reimbursement_pdf,
+            reimb_data={
+                "id": state.get("reimb_id", state.get("session_id", "unknown")),
+                "department": state.get("department", ""),
+                "expense_type": state.get("expense_type", ""),
+                "total_amount": total,
+                "invoices": invoices,
+            },
+        )
+        logger.info(f"PDF: {path}")
+        return {"pdf_path": str(path), "messages": [AIMessage(content=f"📄 报销单已生成，总金额: ¥{total:,.2f}")]}
+    except Exception as e:
+        logger.error(f"PDF 生成失败（不阻断，继续提交审批）: {e}")
+        # PDF 仅为附件，失败不应阻断报销主流程
+        return {"pdf_path": "", "messages": [AIMessage(content="ℹ️ 报销单 PDF 生成失败，但报销申请已保存，可稍后重新下载。")]}
 
 
 async def send_email(state: ReimburseState) -> dict:
@@ -1060,10 +1113,100 @@ async def query_status(state: ReimburseState) -> dict:
     return {"messages": [AIMessage(content="\n".join(lines))]}
 
 
-def approval_process(state: ReimburseState) -> dict:
-    """审批流程处理"""
-    logger.info("Processing approval action")
-    return {"messages": [AIMessage(content="审批操作已记录，报销单状态已更新。")]}
+async def approval_process(state: ReimburseState) -> dict:
+    """
+    审批操作处理 —— 真正写库并变更状态（含权限校验）。
+
+    权限:
+      - employee: 无审批权 → 拒绝
+      - manager : 只能审批本部门报销单
+      - admin/finance: 可跨部门审批
+    动作识别: 从用户消息中解析 通过/驳回/退回 + 报销单号。
+    """
+    from app.agent.entities import _extract_uuid
+    from app.core.database import AsyncSessionLocal
+    from app.services.reimbursement_svc import ApprovalService
+    from app.models.reimbursement import Reimbursement
+    from app.core.exceptions import ReimbursementNotFoundError, BusinessException
+    from app.agent.query_planner import STATUS_LABELS
+
+    messages_list = state.get("messages", [])
+    last_msg = messages_list[-1].content if messages_list else ""
+    entities = state.get("entities") or {}
+
+    user_id = state.get("user_id", "")
+    user_name = state.get("user_name", "") or "审批人"
+    user_role = (state.get("user_role", "") or "").lower()
+    user_department = state.get("user_department", "")
+
+    # --- 权限：员工无审批权 ---
+    if user_role not in ("manager", "admin", "finance"):
+        if not user_role:
+            return {"messages": [AIMessage(content="⛔ 您尚未登录，无法执行审批操作。")]}
+        return {"messages": [AIMessage(content="⛔ 您没有审批权限，只有部门经理或管理员可以审批。")]}
+
+    # --- 解析报销单号 ---
+    reimb_id = state.get("reimb_id", "") or entities.get("reimbursement_id", "") or _extract_uuid(last_msg)
+    if not reimb_id:
+        return {"messages": [AIMessage(content=(
+            "请提供要审批的报销单号，例如：\"通过 6441a34d638d\" 或 \"驳回 6441a34d638d，金额超标\"。"
+        ))]}
+
+    # --- 解析审批动作 ---
+    action = ""
+    if any(k in last_msg for k in ["通过", "同意", "批准", "approve"]):
+        action = "approve"
+    elif any(k in last_msg for k in ["驳回", "拒绝", "不通过", "reject"]):
+        action = "reject"
+    elif any(k in last_msg for k in ["退回", "打回", "return"]):
+        action = "return"
+    if not action:
+        return {"messages": [AIMessage(content=(
+            f"请说明审批动作（通过/驳回/退回），例如：\"通过 {reimb_id[:8]}\"。"
+        ))]}
+
+    # --- 审批意见（可选）：取消息中逗号后的部分 ---
+    comment = ""
+    for sep in ["，", ",", "：", ":"]:
+        if sep in last_msg:
+            tail = last_msg.split(sep, 1)[1].strip()
+            if tail and not _extract_uuid(tail):
+                comment = tail
+                break
+
+    async with AsyncSessionLocal() as db:
+        # 权限：经理只能审批本部门
+        reimb = await db.get(Reimbursement, reimb_id)
+        if not reimb:
+            return {"messages": [AIMessage(content=f"📋 未找到报销单 {reimb_id}。")]}
+        if user_role == "manager" and reimb.department != user_department:
+            return {"messages": [AIMessage(
+                content=f"⛔ 您只能审批本部门（{user_department}）的报销单，该单属于 {reimb.department}。"
+            )]}
+        if reimb.status != "pending":
+            cn = STATUS_LABELS.get(reimb.status, reimb.status)
+            return {"messages": [AIMessage(
+                content=f"⚠️ 报销单 {reimb_id} 当前状态为「{cn}」，只有「待审批」的单子才能审批。"
+            )]}
+
+        svc = ApprovalService(db)
+        try:
+            record = await svc.record(reimb_id, user_name, action, comment or None)
+        except (ReimbursementNotFoundError, BusinessException) as e:
+            return {"messages": [AIMessage(content=f"⚠️ 审批失败：{e.message}")]}
+        except Exception as e:
+            logger.error(f"审批写库失败: {e}")
+            return {"messages": [AIMessage(content="⚠️ 审批操作失败，请稍后重试。")]}
+
+    action_cn = {"approve": "已通过", "reject": "已驳回", "return": "已退回"}[action]
+    logger.info(f"Approval done: reimb={reimb_id} action={action} by={user_name}")
+    return {"status": record and action, "reimb_id": reimb_id, "messages": [AIMessage(content=(
+        f"✅ 审批完成！\n"
+        f"• 报销单号: {reimb_id}\n"
+        f"• 审批结果: {action_cn}\n"
+        f"• 审批人: {user_name}\n"
+        + (f"• 审批意见: {comment}\n" if comment else "")
+    ))]}
 
 
 async def generate_invoice(state: ReimburseState) -> dict:
@@ -1308,10 +1451,11 @@ async def general_response(state: ReimburseState) -> dict:
     else:
         prompt = (
             f"{SYSTEM_PROMPT}\n\n"
-            f"知识库中没有找到与用户问题直接相关的内容。"
-            f"请以友好、专业的助手身份自由回答。"
-            f"不仅可以回答财务问题，也可以处理办公场景中的各类咨询。"
-            f"不要编造不存在的政策条款。\n\n"
+            f"知识库中没有找到与用户问题直接相关的内容。\n"
+            f"请判断用户问题是否与报销/财务/费用/发票/审批相关：\n"
+            f"- 相关：以友好专业的态度自然回答，不编造不存在的政策条款。\n"
+            f"- 完全无关（如闲聊、写代码、通用百科、天气等）：委婉说明你专注于报销财务事务，"
+            f"不便回答该问题，并温和引导用户提出报销相关需求（不要生硬拒绝）。\n\n"
             f"用户: {last_msg}"
         )
 
@@ -1319,14 +1463,17 @@ async def general_response(state: ReimburseState) -> dict:
     if reply:
         return {"messages": [AIMessage(content=reply)]}
 
+    # LLM 不可用时的兜底（无法生成自然语言，返回能力引导）
     return {"messages": [AIMessage(
-        content=f"你好！我是财务报销助手。\n\n"
+        content=f"你好！我是财务报销助手，专注于报销与财务相关事务。\n\n"
+                f"我可以帮您：\n"
                 f"• 新建报销：\"我要报销差旅费 1500 元，部门技术部\"\n"
                 f"• 查询记录：\"列出我的报销记录\" / \"有哪些待审批的？\"\n"
                 f"• 查询进度：\"查询 a1b2c3d4 的审批进度\"\n"
                 f"• 政策咨询：\"差旅费标准是多少？\"\n"
-                f"• 个人信息：\"我的部门是什么？\" / \"我是谁？\"\n"
-                f"• 上传票据：直接上传发票文件即可识别"
+                f"• 生成票据：\"生成一张 1500 元的差旅费发票\"\n"
+                f"• 上传票据：直接上传发票文件即可识别\n\n"
+                f"请问有什么报销相关的需求可以帮您？"
     )]}
 
 
@@ -1369,7 +1516,6 @@ def build_graph():
         "entity_extraction": "entity_extraction",
         "query_status": "query_status",
         "policy_lookup": "policy_lookup",
-        "ocr_invoice": "ocr_invoice",
         "approval_process": "approval_process",
         "generate_invoice": "generate_invoice",
         "modify_reimbursement": "modify_reimbursement",
@@ -1395,15 +1541,17 @@ def build_graph():
     builder.add_edge("ocr_invoice", "policy_check")
     builder.add_edge("policy_check", "budget_control")
 
-    # 预算检查后：超标/正常 → 先入库 → 再走后续流程；硬拒绝 → 直接拒绝
+    # 预算检查后：超标/正常 → 先入库 → 再走后续流程；硬拒绝 → 直接拒绝；预算不可用 → 直接结束
     builder.add_conditional_edges("budget_control", route_after_budget, {
         "save_to_db": "save_to_db",
         "rejection_response": "rejection_response",
+        "halt": END,
     })
 
     builder.add_conditional_edges("save_to_db", route_after_save, {
         "special_approval": "special_approval",
         "generate_pdf": "generate_pdf",
+        "halt": END,
     })
 
     # 末端链路

@@ -79,23 +79,34 @@ def semantic_search(query: str, top_k: int = 5, doc_type: str = "") -> list[dict
 
 def keyword_search(query: str, knowledge_texts: list[str]) -> list[dict]:
     """
-    关键词匹配（降级备用）：当 ChromaDB 不可用时的简单检索方案。
+    关键词匹配（降级备用）：当向量检索不可用/无结果时的简单检索方案。
 
-    用 Jaccard 相似度（共现词/总词数）排序。
+    中文无空格分词，这里用「二元字符 n-gram」重叠度做相似度，
+    比 .split() 更适合中文。
     """
     if not knowledge_texts:
         return []
 
-    query_words = set(query.lower().split())
-    if not query_words:
+    def _bigrams(s: str) -> set:
+        s = s.lower().strip()
+        # 同时保留空白分词（英文）与字符二元组（中文）
+        toks = set(w for w in s.split() if w)
+        chars = "".join(s.split())
+        toks |= {chars[i:i + 2] for i in range(len(chars) - 1)}
+        return toks
+
+    q_grams = _bigrams(query)
+    if not q_grams:
         return []
 
     results = []
     for text in knowledge_texts:
-        text_words = set(text.lower().split())
-        intersection = query_words & text_words
-        if intersection:
-            score = len(intersection) / len(query_words | text_words)
+        t_grams = _bigrams(text)
+        if not t_grams:
+            continue
+        inter = q_grams & t_grams
+        if inter:
+            score = len(inter) / len(q_grams | t_grams)
             results.append({
                 "content": text[:500],
                 "score": round(score, 4),
@@ -104,7 +115,31 @@ def keyword_search(query: str, knowledge_texts: list[str]) -> list[dict]:
             })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:3]
+    return [r for r in results if r["score"] > 0.02][:3]
+
+
+def _load_knowledge_texts() -> list[str]:
+    """加载知识库 Markdown 段落，供关键词降级检索使用（带缓存）。"""
+    global _KB_TEXT_CACHE
+    if _KB_TEXT_CACHE is not None:
+        return _KB_TEXT_CACHE
+    texts: list[str] = []
+    try:
+        from app.agent.knowledge.loader import KNOWLEDGE_DIR
+        if KNOWLEDGE_DIR.exists():
+            for md in sorted(KNOWLEDGE_DIR.glob("*.md")):
+                content = md.read_text(encoding="utf-8")
+                for para in content.split("\n## "):
+                    para = para.strip()
+                    if len(para) > 20:
+                        texts.append(para)
+    except Exception as e:
+        logger.warning(f"加载知识库降级语料失败: {e}")
+    _KB_TEXT_CACHE = texts
+    return texts
+
+
+_KB_TEXT_CACHE: list[str] | None = None
 
 
 def retrieve(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
@@ -125,7 +160,14 @@ def retrieve(query: str, top_k: int = 5, doc_type: str = "") -> list[dict]:
         logger.info(f"Retrieved {len(results)} chunks for '{query[:60]}' (semantic)")
         return results
 
-    logger.info(f"Semantic search returned empty, using no knowledge context")
+    # 语义检索无结果 → 关键词降级（Jaccard/字符n-gram）
+    kb_texts = _load_knowledge_texts()
+    kw_results = keyword_search(query, kb_texts)
+    if kw_results:
+        logger.info(f"Retrieved {len(kw_results)} chunks for '{query[:60]}' (keyword fallback)")
+        return kw_results[:top_k]
+
+    logger.info(f"No knowledge context found for '{query[:60]}'")
     return []
 
 
