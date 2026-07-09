@@ -20,6 +20,8 @@ import type {
   InvoiceListResponse,
   InvoiceGenerateRequest,
   InvoiceGenerateResponse,
+  PdfGenerateResponse,
+  EmailSendResponse,
 } from '@/types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -242,5 +244,17 @@ export async function getInvoices(params?: {
 
 export async function generateInvoice(data: InvoiceGenerateRequest): Promise<InvoiceGenerateResponse> {
   const res = await api.post<InvoiceGenerateResponse>('/invoices/generate', data);
+  return res.data;
+}
+
+// ========== 单据中心 ==========
+
+export async function generateReimbPdf(id: string): Promise<PdfGenerateResponse> {
+  const res = await api.post<PdfGenerateResponse>(`/reimbursements/${id}/pdf`);
+  return res.data;
+}
+
+export async function sendReimbEmail(id: string): Promise<EmailSendResponse> {
+  const res = await api.post<EmailSendResponse>(`/reimbursements/${id}/send-email`);
   return res.data;
 }

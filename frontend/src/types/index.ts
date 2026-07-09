@@ -259,3 +259,26 @@ export interface InvoiceGenerateResponse {
   total_with_tax: number;
   status: string;
 }
+
+// ---------- 单据中心 ----------
+
+export interface PdfGenerateResponse {
+  download_url: string;
+  object_name: string;
+  reimb_id: string;
+}
+
+export interface EmailSendResponse {
+  sent: boolean;
+  message: string;
+}
+
+// ---------- 流程演示 ----------
+
+export interface FlowStep {
+  key: string;
+  title: string;
+  description: string;
+  status: 'wait' | 'process' | 'finish' | 'error';
+  detail?: string;
+}
