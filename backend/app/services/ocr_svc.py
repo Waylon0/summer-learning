@@ -77,7 +77,9 @@ async def upload_file(file_content: bytes, filename: str, content_type: str = ""
     ext = os.path.splitext(filename)[1]
     object_name = f"invoices/{uuid.uuid4().hex}{ext}"
 
-    if STORAGE_BACKEND == "minio" and _minio_available:
+    # 主动确保 MinIO 客户端已初始化（_minio_available 由 _get_minio 设置），
+    # 避免因懒加载时序导致 upload 落到本地、而 read 走 MinIO 的后端不一致。
+    if STORAGE_BACKEND == "minio":
         client = _get_minio()
         if client:
             try:
@@ -103,8 +105,8 @@ async def upload_file(file_content: bytes, filename: str, content_type: str = ""
 # 文件读取
 # =============================================================================
 async def get_file_content(object_name: str) -> bytes:
-    """读取文件二进制内容"""
-    if STORAGE_BACKEND == "minio" and _minio_available:
+    """读取文件二进制内容（MinIO 优先，未命中回退本地）。"""
+    if STORAGE_BACKEND == "minio":
         client = _get_minio()
         if client:
             try:

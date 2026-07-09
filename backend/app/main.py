@@ -280,10 +280,21 @@ async def serve_local_file(object_name: str):
     - 本地存储：直接从磁盘读取返回。
     - MinIO 存储：由后端从 MinIO 拉取内容并回传（不返回 MinIO 直链），
       这样队友通过后端 IP 即可下载，无需能访问 MinIO 的 localhost:9000。
+
+    容错：URL 末尾常因 LLM/markdown 文本提取带上多余标点（如 ")"、"）"、","、"。"），
+    这里做清洗，避免因一个尾随字符导致"文件不存在"。
     """
     from pathlib import Path as _Path
     from app.core.exceptions import NotFoundException
     from app.services.ocr_svc import STORAGE_BACKEND, get_file_content
+
+    # 清洗尾部易混入的标点/空白（半角与全角）
+    cleaned = object_name.strip().rstrip(").，。,、;；)）」』】>》 \t\r\n")
+    # 若含 URL 编码的右括号等，也一并去除
+    for _suffix in ("%29", "%EF%BC%89"):
+        if cleaned.lower().endswith(_suffix.lower()):
+            cleaned = cleaned[: -len(_suffix)]
+    object_name = cleaned
 
     # 防路径遍历：object_name 不允许出现上跳
     if ".." in object_name.replace("\\", "/").split("/"):
