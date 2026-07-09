@@ -54,10 +54,17 @@ def _sanitize_filename(filename: str) -> str:
 
 @router.post("")
 async def upload_invoice(
-    file: UploadFile = File(..., max_length=MAX_FILE_SIZE),
+    file: UploadFile = File(...),
     user: User = Depends(get_current_user),
 ):
-    """上传发票/票据文件（需登录）"""
+    """
+    上传发票/票据文件（需登录）。
+
+    注意：不在 File() 上使用 max_length 约束 —— 新版本 FastAPI/Pydantic 会尝试
+    把 max_length 作为约束应用到 UploadFile 对象上，导致
+    "TypeError: Unable to apply constraint 'max_length'"。
+    文件大小改为读取后手动校验（见步骤2）。
+    """
     safe_filename = _sanitize_filename(file.filename or "invoice.pdf")
 
     # --- 步骤1：扩展名校验 ---

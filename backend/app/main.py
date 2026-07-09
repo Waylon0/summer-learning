@@ -29,6 +29,7 @@ from app.core.exceptions import (
     BusinessException,
     ServiceUnavailableException,
     InternalErrorException,
+    FileValidationError,
 )
 from app.core.middleware import RequestLoggingMiddleware, log_error
 from app.models import Reimbursement, Invoice, DepartmentBudget, ApprovalRecord, User
@@ -269,20 +270,48 @@ async def health_check():
 
 
 # =============================================================================
-# 本地文件访问（无需 MinIO）
+# 文件访问（统一入口：本地磁盘 或 MinIO 均由后端代理，避免暴露 MinIO 地址）
 # =============================================================================
 @app.get("/api/v1/upload/files/{object_name:path}")
 async def serve_local_file(object_name: str):
-    """本地存储模式：直接提供已上传文件"""
+    """
+    提供已上传/生成的文件下载。
+
+    - 本地存储：直接从磁盘读取返回。
+    - MinIO 存储：由后端从 MinIO 拉取内容并回传（不返回 MinIO 直链），
+      这样队友通过后端 IP 即可下载，无需能访问 MinIO 的 localhost:9000。
+    """
     from pathlib import Path as _Path
     from app.core.exceptions import NotFoundException
+    from app.services.ocr_svc import STORAGE_BACKEND, get_file_content
 
+    # 防路径遍历：object_name 不允许出现上跳
+    if ".." in object_name.replace("\\", "/").split("/"):
+        raise FileValidationError("非法的文件路径")
+
+    # 内容类型推断
+    import mimetypes
+    content_type = mimetypes.guess_type(object_name)[0] or "application/octet-stream"
+    filename = object_name.rsplit("/", 1)[-1]
+
+    # MinIO 模式：后端代理内容
+    if STORAGE_BACKEND == "minio":
+        try:
+            data = await get_file_content(object_name)
+        except Exception:
+            raise NotFoundException(resource="文件", identifier=object_name)
+        from starlette.responses import Response as _Response
+        return _Response(
+            content=data,
+            media_type=content_type,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
+    # 本地模式：直接返回磁盘文件
     file_path = (_Path(settings.UPLOAD_DIR) / object_name).resolve()
     base_dir = _Path(settings.UPLOAD_DIR).resolve()
-
     if not str(file_path).startswith(str(base_dir)):
         raise FileValidationError("非法的文件路径")
     if not file_path.exists():
-        raise NotFoundException("文件不存在", resource="文件", identifier=object_name)
-
-    return FileResponse(str(file_path))
+        raise NotFoundException(resource="文件", identifier=object_name)
+    return FileResponse(str(file_path), media_type=content_type)
