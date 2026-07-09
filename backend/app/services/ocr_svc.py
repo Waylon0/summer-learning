@@ -128,13 +128,15 @@ async def get_file_content(object_name: str) -> bytes:
 # 文件访问 URL
 # =============================================================================
 async def get_file_url(object_name: str) -> str:
-    """获取文件访问 URL（本地模式返回 API 路径）"""
-    if STORAGE_BACKEND == "minio" and _minio_available:
-        client = _get_minio()
-        if client:
-            try:
-                return client.presigned_get_object(settings.MINIO_BUCKET, object_name)
-            except Exception:
-                pass
+    """
+    获取文件访问 URL。
 
+    统一返回【后端相对路径】 /api/v1/upload/files/{object_name}，
+    由后端自身代理文件内容（本地磁盘或 MinIO 均可）。
+
+    为什么不直接返回 MinIO 预签名 URL：
+      MinIO 预签名 URL 指向 MINIO_ENDPOINT（如 localhost:9000），
+      只有运行后端的本机能访问，队友通过后端 IP 连接时打不开。
+      改为相对路径后，前端会请求到"后端所在主机"，任何能连上后端的人都能下载。
+    """
     return f"/api/v1/upload/files/{object_name}"
