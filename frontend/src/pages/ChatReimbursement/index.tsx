@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Card, Input, Button, Space, Upload, Tag, message, Switch, Descriptions, Steps,
 } from 'antd';
@@ -12,36 +12,76 @@ import { useAppStore } from '@/stores';
 import { sendChatMessage, sendChatMessageStream, uploadInvoice } from '@/services/api';
 import type { ChatMessage, FlowStep } from '@/types';
 
-const INITIAL_STEPS: FlowStep[] = [
-  { key: 'intent', title: '意图识别', description: '等待中', status: 'wait' },
-  { key: 'ocr', title: 'OCR票据识别', description: '等待中', status: 'wait' },
-  { key: 'compliance', title: '合规检查', description: '等待中', status: 'wait' },
-  { key: 'budget', title: '预算检查', description: '等待中', status: 'wait' },
-  { key: 'pdf', title: '生成报销单PDF', description: '等待中', status: 'wait' },
-  { key: 'email', title: '发送审批邮件', description: '等待中', status: 'wait' },
+// =============================================================================
+// 步骤定义 — 按意图分流，每组步骤有独立的触发正则
+// =============================================================================
+
+interface StepDef { key: string; title: string; trigger: RegExp; doneDesc: string }
+
+// 新建报销 / 上传票据 → 走完整链路
+const STEPS_REIMBURSEMENT: StepDef[] = [
+  { key: 'intent', title: '意图识别', trigger: /.*/, doneDesc: '意图已识别' },
+  { key: 'ocr', title: 'OCR票据识别', trigger: /OCR|识别完成|票据信息|发票代码|发票号码|金额合计|未检测到上传票据|按您提供的金额/, doneDesc: '已识别票据信息' },
+  { key: 'compliance', title: '合规检查', trigger: /合规检查|符合.*标准|合规.*通过|超标|人均|政策要求|不符合/, doneDesc: '合规检查完成' },
+  { key: 'budget', title: '预算检查', trigger: /预算检查|部门.*预算|预算余额|剩余.*预算|可用|预算充足|预算不足|已使用/, doneDesc: '预算检查完成' },
+  { key: 'save', title: '保存报销单', trigger: /保存|已记录|已创建|已写入/, doneDesc: '报销单已保存' },
+  { key: 'pdf', title: '生成报销单PDF', trigger: /报销单已生成|PDF.*已生成|📄/, doneDesc: '报销单PDF已生成' },
+  { key: 'email', title: '发送审批邮件', trigger: /已提交审批|邮件.*发送|📧|审批流程|出纳付款/, doneDesc: '邮件已发送' },
 ];
 
-const STEP_PATTERNS: { key: string; pattern: RegExp; doneDesc: string }[] = [
-  { key: 'ocr', pattern: /OCR|识别完成|票据信息|发票代码|发票号码|未检测到上传票据/, doneDesc: '已识别票据信息' },
-  { key: 'compliance', pattern: /合规检查|符合.*标准|合规.*通过|超标|违规|不符合|政策要求/, doneDesc: '合规检查完成' },
-  { key: 'budget', pattern: /预算|余额|剩余.*预算|可用|已使用|部门.*预算|预算充足|预算不足/, doneDesc: '预算检查完成' },
-  { key: 'pdf', pattern: /报销单已生成|PDF.*生成|📄/, doneDesc: '报销单已生成' },
-  { key: 'email', pattern: /已提交审批|邮件.*发送|📧|审批流程|出纳付款/, doneDesc: '邮件已发送' },
+// 查询进度
+const STEPS_QUERY: StepDef[] = [
+  { key: 'intent', title: '意图识别', trigger: /.*/, doneDesc: '意图已识别' },
+  { key: 'query', title: '查询处理', trigger: /📋|找到.*条|未找到|报销单.*状态/, doneDesc: '查询完成' },
 ];
 
-function detectSteps(accumulatedText: string, intent: string | null): FlowStep[] {
-  return INITIAL_STEPS.map((s) => {
-    if (s.key === 'intent') {
-      if (intent) return { ...s, status: 'finish', description: `识别为: ${intent}` };
-      return s;
-    }
-    const match = STEP_PATTERNS.find((p) => p.key === s.key);
-    if (match && match.pattern.test(accumulatedText)) {
-      return { ...s, status: 'finish', description: match.doneDesc };
-    }
-    return s;
-  });
+// 政策咨询 / 一般对话
+const STEPS_KNOWLEDGE: StepDef[] = [
+  { key: 'intent', title: '意图识别', trigger: /.*/, doneDesc: '意图已识别' },
+  { key: 'search', title: '知识检索', trigger: /检索|查找到|根据.*规定|根据.*政策|搜索结果/, doneDesc: '知识检索完成' },
+  { key: 'reply', title: '生成回答', trigger: /.*/, doneDesc: '回答已生成' },
+];
+
+// 生成发票
+const STEPS_INVOICE: StepDef[] = [
+  { key: 'intent', title: '意图识别', trigger: /.*/, doneDesc: '意图已识别' },
+  { key: 'generate', title: '生成发票PDF', trigger: /发票.*生成|票据.*生成|download_url|object_name/, doneDesc: '发票已生成' },
+];
+
+// 审批操作
+const STEPS_APPROVAL: StepDef[] = [
+  { key: 'intent', title: '意图识别', trigger: /.*/, doneDesc: '意图已识别' },
+  { key: 'approval', title: '审批处理', trigger: /审批.*记录|已通过|已驳回|已更新/, doneDesc: '审批已处理' },
+];
+
+// 默认（通用对话）
+const STEPS_DEFAULT: StepDef[] = [
+  { key: 'intent', title: '意图识别', trigger: /.*/, doneDesc: '意图已识别' },
+  { key: 'reply', title: '生成回复', trigger: /.*/, doneDesc: '回复已生成' },
+];
+
+function pickSteps(intent: string | null): StepDef[] {
+  if (!intent) return STEPS_DEFAULT;
+  if (intent === 'reimbursement_create' || intent === 'document_parse') return STEPS_REIMBURSEMENT;
+  if (intent === 'reimbursement_query') return STEPS_QUERY;
+  if (intent === 'policy_inquiry' || intent === 'general_chat') return STEPS_KNOWLEDGE;
+  if (intent === 'invoice_generate') return STEPS_INVOICE;
+  if (intent === 'approval_action') return STEPS_APPROVAL;
+  return STEPS_DEFAULT;
 }
+
+function intentLabel(intent: string | null): string {
+  const map: Record<string, string> = {
+    reimbursement_create: '新建报销', document_parse: '票据解析', reimbursement_query: '进度查询',
+    policy_inquiry: '政策咨询', invoice_generate: '生成发票', approval_action: '审批操作',
+    general_chat: '通用对话', reimbursement_modify: '修改报销',
+  };
+  return map[intent || ''] || intent || '未知';
+}
+
+// =============================================================================
+// 组件
+// =============================================================================
 
 const fileIcon = (name: string) => {
   const ext = name.split('.').pop()?.toLowerCase();
@@ -63,14 +103,80 @@ export default function ChatReimbursement() {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [streamMode, setStreamMode] = useState(true);
   const [stepsVisible, setStepsVisible] = useState(false);
-  const [flowSteps, setFlowSteps] = useState<FlowStep[]>(INITIAL_STEPS);
-  const [currentIntent, setCurrentIntent] = useState<string | null>(null);
+
+  // 流程步骤状态机
+  const [flowSteps, setFlowSteps] = useState<FlowStep[]>([]);
+  const stepDefsRef = useRef<StepDef[]>(STEPS_DEFAULT);
+  const stepAccRef = useRef('');
+  const intentRef = useRef<string | null>(null);
+
+  // 视觉动画：即使后端事件瞬时到达，前端按 400ms/步节奏依次点亮
+  const targetCursorRef = useRef(0);
+  const visualCursorRef = useRef(0);
+  const tickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { messages, addMessage, appendToLastAssistant, sessionId, setSessionId, clearMessages } = useAppStore();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // 清理定时器
+  useEffect(() => () => { if (tickTimerRef.current) clearTimeout(tickTimerRef.current); }, []);
+
+  // ---- 渲染步骤到指定 cursor ----
+  const renderSteps = useCallback((cursor: number, defs: StepDef[], intent: string | null) => {
+    setFlowSteps(defs.map((d, i) => {
+      if (i < cursor) return { key: d.key, title: d.title, description: d.doneDesc, status: 'finish' as const };
+      if (i === cursor) return { key: d.key, title: d.title, description: '执行中...', status: 'process' as const };
+      return { key: d.key, title: d.title, description: '等待中', status: 'wait' as const };
+    }));
+  }, []);
+
+  // ---- 视觉动画 tick：每次推进 visualCursor 一步 ----
+  const scheduleTick = useCallback(() => {
+    if (tickTimerRef.current) return; // 已在动画中
+    const tick = () => {
+      if (visualCursorRef.current < targetCursorRef.current) {
+        visualCursorRef.current++;
+        renderSteps(visualCursorRef.current, stepDefsRef.current, intentRef.current);
+        tickTimerRef.current = setTimeout(tick, 400);
+      } else {
+        tickTimerRef.current = null;
+        // 如果全部完成，全标 finish
+        const defs = stepDefsRef.current;
+        if (visualCursorRef.current >= defs.length) {
+          setFlowSteps(defs.map((d) => ({ key: d.key, title: d.title, description: d.doneDesc, status: 'finish' as const })));
+        }
+      }
+    };
+    tick();
+  }, [renderSteps]);
+
+  // ---- 推进 targetCursor（SSE 事件触发） ----
+  const bumpTarget = useCallback((newCursor: number) => {
+    if (newCursor > targetCursorRef.current) {
+      targetCursorRef.current = Math.min(newCursor, stepDefsRef.current.length);
+      scheduleTick();
+    }
+  }, [scheduleTick]);
+
+  // ---- 初始化步骤（意图识别后调用） ----
+  const initStepsForIntent = useCallback((intent: string | null) => {
+    const defs = pickSteps(intent);
+    stepDefsRef.current = defs;
+    stepAccRef.current = '';
+    intentRef.current = intent;
+    // 重置：step 0 完成，target 推进到 1
+    targetCursorRef.current = 1;
+    visualCursorRef.current = 0;
+    if (tickTimerRef.current) { clearTimeout(tickTimerRef.current); tickTimerRef.current = null; }
+    renderSteps(0, defs, intent); // 先渲染 step 0 完成
+    // 启动动画推进到 step 1
+    targetCursorRef.current = 1;
+    scheduleTick();
+  }, [renderSteps, scheduleTick]);
 
   const handleSend = async () => {
     if (!input.trim() && fileList.length === 0) return;
@@ -85,12 +191,14 @@ export default function ChatReimbursement() {
     addMessage(userMsg);
     setInput('');
 
-    // 重置流程步骤
-    setCurrentIntent(null);
-    setFlowSteps(INITIAL_STEPS.map((s) =>
-      s.key === 'intent' ? { ...s, status: 'process' as const, description: '分析中...' } : s,
-    ));
-    if (streamMode) setStepsVisible(true);
+    // 重置
+    stepDefsRef.current = STEPS_DEFAULT;
+    stepAccRef.current = '';
+    intentRef.current = null;
+    targetCursorRef.current = 0;
+    visualCursorRef.current = 0;
+    if (tickTimerRef.current) { clearTimeout(tickTimerRef.current); tickTimerRef.current = null; }
+    setFlowSteps([{ key: 'intent', title: '意图识别', description: '分析中...', status: 'process' as const }]);
 
     setLoading(true);
 
@@ -103,7 +211,7 @@ export default function ChatReimbursement() {
 
       if (streamMode) {
         setStreaming(true);
-        let accumulated = '';
+        setStepsVisible(true);
         for await (const event of sendChatMessageStream({
           message: userContent,
           session_id: sessionId || undefined,
@@ -113,28 +221,37 @@ export default function ChatReimbursement() {
             case 'start':
               if (event.session_id) setSessionId(event.session_id);
               break;
+
             case 'intent': {
               if (event.session_id) setSessionId(event.session_id);
-              const intent = (event as Record<string, unknown>).intent as string || event.type;
-              setCurrentIntent(intent);
-              setFlowSteps((prev) => prev.map((s) =>
-                s.key === 'intent' ? { ...s, status: 'finish' as const, description: `识别为: ${intent}` } : s,
-              ));
+              const intent = (event as Record<string, unknown>).intent as string || '';
+              initStepsForIntent(intent || null);
               break;
             }
+
             case 'message': {
               const content = (event as Record<string, unknown>).content as string || '';
               appendToLastAssistant(content);
-              accumulated += content;
-              setFlowSteps(detectSteps(accumulated, currentIntent));
+
+              // 状态机：累积文本，匹配当前步骤触发词 → 推进 targetCursor
+              const defs = stepDefsRef.current;
+              const cursor = targetCursorRef.current;
+              if (cursor < defs.length) {
+                stepAccRef.current += content;
+                if (defs[cursor].trigger.test(stepAccRef.current)) {
+                  stepAccRef.current = '';
+                  bumpTarget(cursor + 1);
+                }
+              }
               break;
             }
+
             case 'done':
               if (event.session_id) setSessionId(event.session_id);
-              setFlowSteps((prev) => prev.map((s) =>
-                s.status === 'wait' ? s : { ...s, status: 'finish' as const },
-              ));
+              // 推进到终点 → 动画逐一点亮剩余步骤
+              bumpTarget(stepDefsRef.current.length);
               break;
+
             case 'error':
               message.error((event as Record<string, unknown>).content as string || '处理异常');
               break;
@@ -356,17 +473,18 @@ export default function ChatReimbursement() {
               <Button size="small" type="text" onClick={() => setStepsVisible(false)}>收起</Button>
             }
           >
-            <Steps
-              direction="vertical"
-              size="small"
-              current={-1}
-              items={stepsItems as never}
-              style={{ fontSize: 13 }}
-            />
-            {!streaming && flowSteps.every((s) => s.status === 'wait') && (
+            {flowSteps.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#999', fontSize: 13, marginTop: 24 }}>
                 发送报销消息后<br />自动展示执行步骤
               </div>
+            ) : (
+              <Steps
+                direction="vertical"
+                size="small"
+                current={-1}
+                items={stepsItems as never}
+                style={{ fontSize: 13 }}
+              />
             )}
           </Card>
         </div>
