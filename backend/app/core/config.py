@@ -113,16 +113,33 @@ def setup_logging():
     """
     初始化全局日志系统。
     配置两个日志输出通道：
-      1. 控制台（stderr）：开发时实时查看，带颜色和格式化
+      1. 控制台（stdout）：开发时实时查看，带颜色和格式化
       2. 文件日志：自动按日期分文件，每个文件最大 10MB，保留最近 7 天
+
+    实时性说明：
+      控制台 sink 使用 stdout（uvicorn 默认也走 stdout，行缓冲更利于终端实时显示），
+      并显式 colorize=True。若通过管道/重定向运行导致块缓冲，可用环境变量
+      PYTHONUNBUFFERED=1 强制无缓冲。
     """
     # 移除 loguru 默认的日志处理器
     logger.remove()
 
-    # 控制台输出：带颜色的格式化日志
+    # Windows 控制台默认 GBK 编码，无法输出 emoji（✅📄📧 等），
+    # 会抛 UnicodeEncodeError 导致该条日志"消失"。这里强制把标准输出/错误
+    # 重配为 UTF-8，保证含 emoji 的日志也能正常打印到终端。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # 控制台输出：带颜色的格式化日志（实时刷新到终端）
     logger.add(
-        sys.stderr,
+        sys.stdout,
         level=get_settings().LOG_LEVEL,
+        colorize=True,
+        enqueue=False,      # 同步写出，保证请求日志即时出现在终端
+        backtrace=False,
         format=(
             "<green>{time:HH:mm:ss}</green> | "
             "<level>{level: <8}</level> | "
@@ -137,6 +154,8 @@ def setup_logging():
         rotation="10 MB",                   # 单文件超过 10MB 自动切分
         retention="7 days",                 # 只保留最近 7 天的日志
         level="DEBUG",
+        encoding="utf-8",
+        enqueue=False,
         format=(
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
             "{level: <8} | "

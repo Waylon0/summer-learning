@@ -22,6 +22,8 @@ import type {
   InvoiceGenerateResponse,
   PdfGenerateResponse,
   EmailSendResponse,
+  ConversationSummary,
+  ConversationDetail,
 } from '@/types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -138,6 +140,32 @@ export async function* sendChatMessageStream(data: ChatRequest) {
       }
     }
   }
+}
+
+// ========== 会话管理 ==========
+
+export async function createConversation(title?: string): Promise<ConversationSummary> {
+  const res = await api.post<ConversationSummary>('/conversations', { title: title || '新对话' });
+  return res.data;
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const res = await api.get<ConversationSummary[]>('/conversations');
+  return res.data;
+}
+
+export async function getConversation(id: string): Promise<ConversationDetail> {
+  const res = await api.get<ConversationDetail>(`/conversations/${id}`);
+  return res.data;
+}
+
+export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
+  const res = await api.patch<ConversationSummary>(`/conversations/${id}`, { title });
+  return res.data;
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await api.delete(`/conversations/${id}`);
 }
 
 // ========== 报销单 CRUD ==========

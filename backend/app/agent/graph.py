@@ -349,18 +349,22 @@ async def classify_intent(state: ReimburseState) -> dict:
     logger.info(f"Fused intent: {intent_result.primary.value}/{intent_result.sub.value} (source={intent_result.source} conf={intent_result.confidence:.2f})")
 
     # --- 步骤3：从上下文中继承已确认的实体 ---
+    # 仅在"补充上轮缺失信息"(is_contextual)时才继承上下文里的金额/费用类型/说明，
+    # 避免上一单已提交后其金额残留、污染一次全新的报销。
     dept = state.get("department", "")
     etype = state.get("expense_type", "")
     amt = state.get("total_amount", 0.0)
     desc = state.get("description", "")
+    # 部门通常等于用户所属部门，任何时候都可从上下文兜底
     if ctx and not dept:
         dept = ctx.department
-    if ctx and not etype:
-        etype = ctx.expense_type
-    if ctx and amt <= 0:
-        amt = ctx.total_amount
-    if ctx and not desc:
-        desc = ctx.description
+    if is_contextual and ctx:
+        if not etype:
+            etype = ctx.expense_type
+        if amt <= 0:
+            amt = ctx.total_amount
+        if not desc:
+            desc = ctx.description
 
     # --- 步骤4：提取实体 + 检查缺失槽位 ---
     entities = extract_entities(last_msg)
@@ -436,10 +440,13 @@ async def entity_extraction(state: ReimburseState) -> dict:
     from app.agent.sessions import get_session_store
     ctx = get_session_store().get_context(session_id)
 
+    # 仅在"补充上轮缺失信息"时继承上下文的金额/费用类型/说明，
+    # 防止上一单已提交后其金额残留污染新报销。部门始终可从上下文兜底。
+    is_contextual = state.get("is_contextual_fill", False)
     context_dept = ctx.department if ctx else ""
-    context_type = ctx.expense_type if ctx else ""
-    context_amount = ctx.total_amount if ctx else 0.0
-    context_desc = ctx.description if ctx else ""
+    context_type = ctx.expense_type if (ctx and is_contextual) else ""
+    context_amount = ctx.total_amount if (ctx and is_contextual) else 0.0
+    context_desc = ctx.description if (ctx and is_contextual) else ""
 
     # JWT 用户默认信息（优先级低于上下文，高于空值）
     state_dept = state.get("department") or ""

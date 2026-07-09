@@ -32,6 +32,7 @@ from app.core.exceptions import (
 )
 from app.core.middleware import RequestLoggingMiddleware, log_error
 from app.models import Reimbursement, Invoice, DepartmentBudget, ApprovalRecord, User
+from app.models import Conversation, ConversationMessage
 from app.api.v1.chat import router as chat_router
 from app.api.v1.reimbursements import router as reimb_router
 from app.api.v1.budget import router as budget_router
@@ -41,6 +42,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.stats import router as stats_router
 from app.api.v1.invoices import router as invoices_router
+from app.api.v1.conversations import router as conversations_router
 
 settings = get_settings()
 logger = setup_logging()
@@ -240,6 +242,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(invoices_router, prefix="/api/v1")
+app.include_router(conversations_router, prefix="/api/v1")
 
 
 # =============================================================================

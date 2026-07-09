@@ -1,8 +1,8 @@
 -- ============================================================================
 -- ReimburseAgent — 数据库 Schema (PostgreSQL)
 -- ============================================================================
--- 6 张核心表: users / reimbursements / invoices / department_budget
---            / approval_records / expense_policy
+-- 8 张核心表: users / reimbursements / invoices / department_budget
+--            / approval_records / expense_policy / conversations / conversation_messages
 
 CREATE TABLE IF NOT EXISTS users (
     id              VARCHAR(36) PRIMARY KEY,
@@ -86,3 +86,24 @@ CREATE TABLE IF NOT EXISTS expense_policy (
     max_per_request  NUMERIC(12, 2),
     description      VARCHAR(128)
 );
+
+-- 会话管理（类 DeepSeek 网页多会话）
+CREATE TABLE IF NOT EXISTS conversations (
+    id           VARCHAR(36) PRIMARY KEY,
+    user_id      VARCHAR(36) NOT NULL,
+    title        VARCHAR(128) NOT NULL DEFAULT '新对话',
+    created_at   TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at   TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_conversations_user_id ON conversations (user_id);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id               VARCHAR(36) PRIMARY KEY,
+    conversation_id  VARCHAR(36) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    seq              INTEGER NOT NULL DEFAULT 0,
+    role             VARCHAR(16) NOT NULL,
+    content          TEXT NOT NULL DEFAULT '',
+    reasoning        TEXT,
+    created_at       TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_conversation_messages_conversation_id ON conversation_messages (conversation_id);

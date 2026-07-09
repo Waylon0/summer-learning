@@ -22,6 +22,14 @@ import subprocess
 import argparse
 from pathlib import Path
 
+# Windows 控制台默认 GBK 编码，print emoji（🚀✅📦 等）会抛 UnicodeEncodeError。
+# 在最早时机把标准输出/错误重配为 UTF-8，保证 CLI 与后续日志正常打印。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = BACKEND_DIR.parent
 IS_WINDOWS = platform.system() == "Windows"
@@ -153,17 +161,36 @@ def db_init():
 # 应用启动
 # ============================================================================
 def start_backend(reload: bool = True, port: int = 8000, host: str = "0.0.0.0"):
-    """启动 FastAPI 后端（前台运行，Ctrl+C 停止）"""
-    cmd = ["uv", "run", "uvicorn", "app.main:app", "--host", host, "--port", str(port)]
-    if reload:
-        cmd.append("--reload")
+    """
+    启动 FastAPI 后端（前台运行，Ctrl+C 停止）。
+
+    关键：直接在【当前进程】内调用 uvicorn.run，而不是再 subprocess 一层
+    `uv run uvicorn`。原因：
+      1. 少一层嵌套子进程 → 终端日志由 uvicorn 直接继承标准输出，实时可见。
+      2. Ctrl+C(SIGINT) 直接送达 uvicorn，由其原生信号处理器优雅停止，
+         不会像多层 `uv run + subprocess` 那样吞掉信号导致退不出。
+    """
+    import uvicorn
+
+    # 确保工作目录 + import 路径为 backend/（供 app.main 导入与 --reload 监听）
+    os.chdir(str(BACKEND_DIR))
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
 
     print(f"\n🚀 启动 FastAPI: http://{host}:{port}")
     print(f"   API 文档: http://{host}:{port}/docs")
     print(f"   健康检查: http://{host}:{port}/health")
     print("   Ctrl+C 停止\n")
 
-    subprocess.run(cmd, cwd=str(BACKEND_DIR))
+    uvicorn.run(
+        "app.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        reload_dirs=[str(BACKEND_DIR)] if reload else None,
+        log_level=os.environ.get("LOG_LEVEL", "info").lower(),
+        access_log=True,
+    )
 
 
 # ============================================================================

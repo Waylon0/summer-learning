@@ -18,6 +18,15 @@ export interface HealthStatus {
 
 // ---------- 聊天 ----------
 
+export interface ThinkingStep {
+  kind: 'tool_call' | 'tool_result';
+  tool: string;
+  label: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  thought?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -25,6 +34,7 @@ export interface ChatMessage {
   timestamp: string;
   intent?: string;
   entities?: Record<string, unknown>;
+  thinking?: ThinkingStep[];
 }
 
 export interface ChatRequest {
@@ -41,15 +51,44 @@ export interface ChatResponse {
   tool_calls?: Record<string, unknown>[];
 }
 
+// ---------- 会话管理 ----------
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ConversationMessageItem {
+  id: string;
+  seq: number;
+  role: string;
+  content: string;
+  reasoning?: ThinkingStep[] | null;
+  created_at?: string;
+}
+
+export interface ConversationDetail {
+  id: string;
+  title: string;
+  created_at?: string;
+  updated_at?: string;
+  messages: ConversationMessageItem[];
+}
+
 // ---------- SSE 事件 ----------
 
 export interface SSEEvent {
-  type: 'start' | 'step' | 'intent' | 'message' | 'result' | 'done' | 'error';
+  type: 'start' | 'thinking' | 'tool_call' | 'tool_result' | 'message' | 'done' | 'error';
   content?: string;
   session_id?: string;
-  intent?: string;
-  node?: string;
-  timestamp?: string;
+  tool?: string;
+  label?: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  thought?: string;
+  message?: string;
   elapsed_ms?: number;
 }
 

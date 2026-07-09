@@ -107,6 +107,25 @@ class SessionContext:
     def is_filling_slots(self) -> bool:
         return self.awaiting_response and len(self.missing_slots) > 0
 
+    def clear_reimbursement_slots(self):
+        """
+        清空本轮报销相关的已抽取实体。
+
+        用于报销单成功提交后，避免上一单的金额/目的地/费用类型等
+        残留到下一次新报销中（否则用户新说"我要报销差旅费"时会
+        错误地复用上一单的金额）。部门保留（通常与用户所属部门一致）。
+        """
+        self.expense_type = ""
+        self.total_amount = 0.0
+        self.description = ""
+        self.destination = ""
+        self.guest_count = 0
+        self.guest_company = ""
+        self.missing_slots = []
+        self.awaiting_response = False
+        self.last_agent_question = ""
+
+
 
 # =============================================================================
 # Redis 后端（可选）
