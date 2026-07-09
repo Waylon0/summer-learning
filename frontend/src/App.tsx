@@ -6,6 +6,7 @@ import {
   SearchOutlined,
   AuditOutlined,
   TeamOutlined,
+  FileTextOutlined,
   LogoutOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -14,6 +15,7 @@ import Dashboard from './pages/Dashboard';
 import StatusQuery from './pages/StatusQuery';
 import Approval from './pages/Approval';
 import UserManagement from './pages/UserManagement';
+import InvoiceLedger from './pages/InvoiceLedger';
 import AuthPage from './pages/Auth';
 import { healthCheck } from './services/api';
 import { useAuthStore } from './stores';
@@ -26,6 +28,7 @@ const baseMenuItems = [
   { key: 'dashboard', icon: <DashboardOutlined />, label: '报销看板' },
   { key: 'approval', icon: <AuditOutlined />, label: '报销审批' },
   { key: 'status', icon: <SearchOutlined />, label: '进度查询' },
+  { key: 'invoices', icon: <FileTextOutlined />, label: '发票台账' },
 ];
 
 const adminMenuItem = { key: 'users', icon: <TeamOutlined />, label: '用户管理' };
@@ -35,6 +38,7 @@ const pageMap: Record<string, React.ReactNode> = {
   dashboard: <Dashboard />,
   approval: <Approval />,
   status: <StatusQuery />,
+  invoices: <InvoiceLedger />,
   users: <UserManagement />,
 };
 

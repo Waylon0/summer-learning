@@ -1,91 +1,99 @@
 import { useEffect, useState, useRef } from 'react';
 import { Card, Row, Col, Statistic, Progress, Table, Skeleton, Space } from 'antd';
-import { WalletOutlined, RiseOutlined, FallOutlined, TrophyOutlined } from '@ant-design/icons';
+import { WalletOutlined, RiseOutlined, FallOutlined, TrophyOutlined, FileTextOutlined } from '@ant-design/icons';
 import { Chart } from '@antv/g2';
-import { getAllBudgets } from '@/services/api';
-import type { BudgetInfo } from '@/types';
+import { getAllBudgets, getTrend, getPersonalStats } from '@/services/api';
+import type { BudgetInfo, TrendResponse, PersonalStatsResponse } from '@/types';
 
 export default function Dashboard() {
   const [budgets, setBudgets] = useState<BudgetInfo[]>([]);
+  const [trend, setTrend] = useState<TrendResponse | null>(null);
+  const [personal, setPersonal] = useState<PersonalStatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const ringRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const trendRef = useRef<HTMLDivElement>(null);
   const ringChartRef = useRef<Chart | null>(null);
   const barChartRef = useRef<Chart | null>(null);
+  const trendChartRef = useRef<Chart | null>(null);
 
   useEffect(() => {
-    getAllBudgets()
-      .then(setBudgets)
+    Promise.all([
+      getAllBudgets(),
+      getTrend({ months: 6 }),
+      getPersonalStats(),
+    ])
+      .then(([b, t, p]) => { setBudgets(b); setTrend(t); setPersonal(p); })
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
     if (budgets.length === 0) return;
 
-    // 环形图 —— 各部门预算使用率
     if (ringRef.current) {
       if (ringChartRef.current) ringChartRef.current.destroy();
-      const chart = new Chart({
-        container: ringRef.current,
-        autoFit: true,
-        height: 360,
-      });
+      const chart = new Chart({ container: ringRef.current, autoFit: true, height: 360 });
       chart.coordinate({ type: 'theta', outerRadius: 0.8, innerRadius: 0.5 });
-      chart
-        .interval()
-        .data(budgets.map((b) => ({ item: b.department, value: b.used_amount })))
-        .encode('y', 'value')
-        .encode('color', 'item')
+      chart.interval().data(budgets.map((b) => ({ item: b.department, value: b.used_amount })))
+        .encode('y', 'value').encode('color', 'item')
         .style({ stroke: '#fff', lineWidth: 2 })
-        .label({
-          text: (d: { item: string; value: number }) =>
-            `${d.item}\n¥${(d.value / 10000).toFixed(1)}万`,
-          position: 'outside',
-        })
+        .label({ text: (d: { item: string; value: number }) => `${d.item}\n¥${(d.value / 10000).toFixed(1)}万`, position: 'outside' })
         .tooltip({ title: 'item', items: [{ channel: 'y', valueFormatter: (v: number) => `¥${v.toLocaleString()}` }] })
         .legend(false);
       chart.render();
       ringChartRef.current = chart;
     }
 
-    // 柱状图 —— 各部门预算 vs 已使用 vs 剩余
     if (barRef.current) {
       if (barChartRef.current) barChartRef.current.destroy();
-      const chart = new Chart({
-        container: barRef.current,
-        autoFit: true,
-        height: 360,
-      });
+      const chart = new Chart({ container: barRef.current, autoFit: true, height: 360 });
       const barData = budgets.flatMap((b) => [
         { department: b.department, type: '年度预算', amount: b.annual_budget },
         { department: b.department, type: '已使用', amount: b.used_amount },
         { department: b.department, type: '剩余', amount: b.remaining },
       ]);
-      chart
-        .interval()
-        .data(barData)
-        .encode('x', 'department')
-        .encode('y', 'amount')
-        .encode('color', 'type')
-        .transform({ type: 'dodgeX' })
-        .style({ radiusTopLeft: 4, radiusTopRight: 4 })
+      chart.interval().data(barData).encode('x', 'department').encode('y', 'amount').encode('color', 'type')
+        .transform({ type: 'dodgeX' }).style({ radiusTopLeft: 4, radiusTopRight: 4 })
         .tooltip({ title: 'department', items: [{ channel: 'y', valueFormatter: (v: number) => `¥${v.toLocaleString()}` }] });
       chart.render();
       barChartRef.current = chart;
     }
 
-    return () => {
-      ringChartRef.current?.destroy();
-      barChartRef.current?.destroy();
-    };
+    return () => { ringChartRef.current?.destroy(); barChartRef.current?.destroy(); };
   }, [budgets]);
+
+  useEffect(() => {
+    if (!trend || !trendRef.current) return;
+    if (trendChartRef.current) trendChartRef.current.destroy();
+
+    const chart = new Chart({ container: trendRef.current, autoFit: true, height: 360 });
+    const lineData: { month: string; type: string; amount: number }[] = [];
+    trend.series.forEach((s) => {
+      trend.months.forEach((m, i) => { lineData.push({ month: m, type: s.label, amount: s.data[i] || 0 }); });
+    });
+
+    chart.data(lineData)
+      .encode('x', 'month')
+      .encode('y', 'amount')
+      .encode('color', 'type')
+      .scale('y', { nice: true })
+      .axis('y', { labelFormatter: (v: number) => `¥${(v / 10000).toFixed(0)}万` });
+
+    chart.line().encode('shape', 'smooth');
+    chart.point().encode('shape', 'point').tooltip(false);
+    chart.interaction('tooltip', { shared: true });
+    chart.render();
+    trendChartRef.current = chart;
+
+    return () => { trendChartRef.current?.destroy(); };
+  }, [trend]);
 
   if (loading) {
     return (
       <div style={{ padding: 24 }}>
         <Row gutter={16} style={{ marginBottom: 24 }}>
-          {[1, 2, 3].map((i) => (
-            <Col span={8} key={i}>
+          {[1, 2, 3, 4, 5].map((i) => (
+            <Col span={i <= 3 ? 8 : 12} key={i}>
               <Card><Skeleton active paragraph={{ rows: 1 }} /></Card>
             </Col>
           ))}
@@ -108,82 +116,71 @@ export default function Dashboard() {
 
   const columns = [
     { title: '部门', dataIndex: 'department', key: 'department' },
-    {
-      title: '年度预算',
-      dataIndex: 'annual_budget',
-      key: 'annual_budget',
-      render: (v: number) => `¥${v.toLocaleString()}`,
-    },
-    {
-      title: '已使用',
-      dataIndex: 'used_amount',
-      key: 'used_amount',
-      render: (v: number) => `¥${v.toLocaleString()}`,
-    },
-    {
-      title: '剩余',
-      dataIndex: 'remaining',
-      key: 'remaining',
-      render: (v: number) => (
-        <span style={{ color: v < 0 ? '#ff4d4f' : '#52c41a' }}>¥{v.toLocaleString()}</span>
-      ),
-    },
-    {
-      title: '使用率',
-      dataIndex: 'usage_rate',
-      key: 'usage_rate',
-      render: (v: number) => (
-        <Progress
-          percent={Math.round(v)}
-          size="small"
-          status={v > 90 ? 'exception' : v > 70 ? 'active' : 'normal'}
-        />
-      ),
-    },
+    { title: '年度预算', dataIndex: 'annual_budget', key: 'annual_budget', render: (v: number) => `¥${v.toLocaleString()}` },
+    { title: '已使用', dataIndex: 'used_amount', key: 'used_amount', render: (v: number) => `¥${v.toLocaleString()}` },
+    { title: '剩余', dataIndex: 'remaining', key: 'remaining', render: (v: number) => (<span style={{ color: v < 0 ? '#ff4d4f' : '#52c41a' }}>¥{v.toLocaleString()}</span>) },
+    { title: '使用率', dataIndex: 'usage_rate', key: 'usage_rate', render: (v: number) => (<Progress percent={Math.round(v)} size="small" status={v > 90 ? 'exception' : v > 70 ? 'active' : 'normal'} />) },
   ];
 
   return (
     <div>
       <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={8}>
+        <Col span={6}>
           <Card>
-            <Statistic
-              title="年度总预算"
-              value={totalBudget}
-              precision={0}
-              prefix={<WalletOutlined />}
-              suffix="元"
-              formatter={(v) => `¥${Number(v).toLocaleString()}`}
-            />
+            <Statistic title="年度总预算" value={totalBudget} precision={0} prefix={<WalletOutlined />} suffix="元"
+              formatter={(v) => `¥${Number(v).toLocaleString()}`} />
           </Card>
         </Col>
-        <Col span={8}>
+        <Col span={6}>
           <Card>
-            <Statistic
-              title="已使用"
-              value={totalUsed}
-              precision={0}
-              prefix={<RiseOutlined />}
-              suffix="元"
-              valueStyle={{ color: '#cf1322' }}
-              formatter={(v) => `¥${Number(v).toLocaleString()}`}
-            />
+            <Statistic title="已使用" value={totalUsed} precision={0} prefix={<RiseOutlined />} suffix="元"
+              valueStyle={{ color: '#cf1322' }} formatter={(v) => `¥${Number(v).toLocaleString()}`} />
           </Card>
         </Col>
-        <Col span={8}>
+        <Col span={6}>
+          <Card>
+            <Statistic title="剩余可用" value={totalRemaining} precision={0} prefix={<FallOutlined />} suffix="元"
+              valueStyle={{ color: totalRemaining < 0 ? '#cf1322' : '#3f8600' }} formatter={(v) => `¥${Number(v).toLocaleString()}`} />
+          </Card>
+        </Col>
+        <Col span={6}>
           <Card>
             <Statistic
-              title="剩余可用"
-              value={totalRemaining}
-              precision={0}
-              prefix={<FallOutlined />}
-              suffix="元"
-              valueStyle={{ color: totalRemaining < 0 ? '#cf1322' : '#3f8600' }}
-              formatter={(v) => `¥${Number(v).toLocaleString()}`}
+              title={<>本月报销 <FileTextOutlined /></>}
+              value={personal?.current_month?.count || 0}
+              suffix={`笔 / ¥${(personal?.current_month?.total || 0).toLocaleString()}`}
+              valueStyle={{ color: '#1677ff' }}
             />
           </Card>
         </Col>
       </Row>
+
+      {personal && (
+        <Row gutter={16} style={{ marginBottom: 24 }}>
+          <Col span={24}>
+            <Card size="small">
+              <Row gutter={32}>
+                <Col>
+                  <span style={{ color: '#999', fontSize: 13 }}>本月：</span>
+                  <span style={{ fontWeight: 600 }}>{personal.current_month.count} 笔</span>
+                  <span style={{ marginLeft: 8, fontWeight: 600, color: '#1677ff' }}>¥{personal.current_month.total.toLocaleString()}</span>
+                </Col>
+                <Col>
+                  <span style={{ color: '#999', fontSize: 13 }}>上月：</span>
+                  <span style={{ fontWeight: 600 }}>{personal.last_month.count} 笔</span>
+                  <span style={{ marginLeft: 8, fontWeight: 600, color: '#1677ff' }}>¥{personal.last_month.total.toLocaleString()}</span>
+                </Col>
+                <Col>
+                  <span style={{ color: '#999', fontSize: 13 }}>待审批：</span>
+                  <span style={{ fontWeight: 600, color: '#faad14' }}>{personal.status_breakdown?.pending || 0} 笔</span>
+                  <span style={{ marginLeft: 8, color: '#999', fontSize: 13 }}>已通过：</span>
+                  <span style={{ fontWeight: 600, color: '#52c41a' }}>{personal.status_breakdown?.approved || 0} 笔</span>
+                </Col>
+              </Row>
+            </Card>
+          </Col>
+        </Row>
+      )}
 
       <Card
         title={<Space><TrophyOutlined /> 部门费用排行</Space>}
@@ -191,57 +188,39 @@ export default function Dashboard() {
         extra={<span style={{ fontSize: 12, color: '#999' }}>按已使用金额降序</span>}
       >
         <Row gutter={[16, 12]}>
-          {[...budgets]
-            .sort((a, b) => b.used_amount - a.used_amount)
-            .map((b, i) => (
-              <Col span={i === 0 ? 8 : 4} key={b.id}>
-                <Card
-                  size="small"
-                  style={{
-                    textAlign: 'center',
-                    background: b.usage_rate > 90 ? '#fff2f0' : i === 0 ? '#f6ffed' : '#fafafa',
-                    border: b.usage_rate > 90 ? '1px solid #ffccc7' : undefined,
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
-                    {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`} {b.department}
-                  </div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: '#1677ff' }}>
-                    ¥{(b.used_amount / 10000).toFixed(1)}<span style={{ fontSize: 12 }}>万</span>
-                  </div>
-                  <Progress
-                    percent={Math.round(b.usage_rate)}
-                    size="small"
-                    status={b.usage_rate > 90 ? 'exception' : 'normal'}
-                    style={{ marginTop: 4 }}
-                  />
-                </Card>
-              </Col>
-            ))}
+          {[...budgets].sort((a, b) => b.used_amount - a.used_amount).map((b, i) => (
+            <Col span={i === 0 ? 8 : 4} key={b.id}>
+              <Card size="small" style={{ textAlign: 'center', background: b.usage_rate > 90 ? '#fff2f0' : i === 0 ? '#f6ffed' : '#fafafa', border: b.usage_rate > 90 ? '1px solid #ffccc7' : undefined }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                  {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`} {b.department}
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#1677ff' }}>
+                  ¥{(b.used_amount / 10000).toFixed(1)}<span style={{ fontSize: 12 }}>万</span>
+                </div>
+                <Progress percent={Math.round(b.usage_rate)} size="small" status={b.usage_rate > 90 ? 'exception' : 'normal'} style={{ marginTop: 4 }} />
+              </Card>
+            </Col>
+          ))}
         </Row>
       </Card>
 
+      {trend && (
+        <Card title="费用趋势（近6个月）" style={{ marginBottom: 24 }}>
+          <div ref={trendRef} style={{ minHeight: 360 }} />
+        </Card>
+      )}
+
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col span={12}>
-          <Card title="各部门预算使用占比">
-            <div ref={ringRef} style={{ minHeight: 360 }} />
-          </Card>
+          <Card title="各部门预算使用占比"><div ref={ringRef} style={{ minHeight: 360 }} /></Card>
         </Col>
         <Col span={12}>
-          <Card title="各部门预算对比">
-            <div ref={barRef} style={{ minHeight: 360 }} />
-          </Card>
+          <Card title="各部门预算对比"><div ref={barRef} style={{ minHeight: 360 }} /></Card>
         </Col>
       </Row>
 
       <Card title="部门预算详情">
-        <Table
-          dataSource={budgets}
-          columns={columns}
-          rowKey="id"
-          pagination={false}
-          size="middle"
-        />
+        <Table dataSource={budgets} columns={columns} rowKey="id" pagination={false} size="middle" />
       </Card>
     </div>
   );

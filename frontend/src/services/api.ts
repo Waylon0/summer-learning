@@ -12,6 +12,14 @@ import type {
   RegisterRequest,
   TokenResponse,
   UserInfo,
+  TrendResponse,
+  PersonalStatsResponse,
+  DepartmentRankingResponse,
+  SummaryResponse,
+  InvoiceRecord,
+  InvoiceListResponse,
+  InvoiceGenerateRequest,
+  InvoiceGenerateResponse,
 } from '@/types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -195,5 +203,44 @@ export async function listUsers(params?: { role?: string; department?: string })
 
 export async function updateUserRole(userId: string, role: string): Promise<UserInfo> {
   const res = await api.put<UserInfo>(`/admin/users/${userId}/role`, { role });
+  return res.data;
+}
+
+// ========== 费用统计 ==========
+
+export async function getTrend(params?: { months?: number; department?: string }): Promise<TrendResponse> {
+  const res = await api.get<TrendResponse>('/stats/trend', { params });
+  return res.data;
+}
+
+export async function getPersonalStats(params?: { user_id?: string; month?: string }): Promise<PersonalStatsResponse> {
+  const res = await api.get<PersonalStatsResponse>('/stats/personal', { params });
+  return res.data;
+}
+
+export async function getDepartmentRanking(period?: string): Promise<DepartmentRankingResponse> {
+  const res = await api.get<DepartmentRankingResponse>('/stats/department-ranking', { params: { period } });
+  return res.data;
+}
+
+export async function getSummary(): Promise<SummaryResponse> {
+  const res = await api.get<SummaryResponse>('/stats/summary');
+  return res.data;
+}
+
+// ========== 发票台账 ==========
+
+export async function getInvoices(params?: {
+  page?: number; page_size?: number;
+  date_from?: string; date_to?: string;
+  amount_min?: number; amount_max?: number;
+  expense_type?: string; seller_name?: string; keyword?: string;
+}): Promise<InvoiceListResponse> {
+  const res = await api.get<InvoiceListResponse>('/invoices', { params });
+  return res.data;
+}
+
+export async function generateInvoice(data: InvoiceGenerateRequest): Promise<InvoiceGenerateResponse> {
+  const res = await api.post<InvoiceGenerateResponse>('/invoices/generate', data);
   return res.data;
 }

@@ -166,3 +166,96 @@ export interface UserInfo {
   is_active: boolean;
   created_at?: string;
 }
+
+// ---------- 费用统计 ----------
+
+export interface TrendSeries {
+  expense_type: string;
+  label: string;
+  data: number[];
+}
+
+export interface TrendResponse {
+  months: string[];
+  series: TrendSeries[];
+}
+
+export interface PersonalStatsResponse {
+  user_name: string;
+  current_month: { count: number; total: number };
+  last_month: { count: number; total: number };
+  status_breakdown: Record<string, number>;
+}
+
+export interface DepartmentRankingResponse {
+  rankings: { department: string; total: number; budget: number; usage_rate: number }[];
+}
+
+export interface SummaryResponse {
+  annual_budget_total: number;
+  used_total: number;
+  remaining_total: number;
+  pending_count: number;
+  this_month_total: number;
+  last_month_total: number;
+}
+
+// ---------- 发票台账 ----------
+
+export interface InvoiceRecord {
+  id: string;
+  invoice_code: string;
+  invoice_number: string;
+  amount: number;
+  invoice_date: string;
+  seller_name: string;
+  buyer_name: string;
+  expense_type: string;
+  reimbursement_id: string;
+  file_path?: string;
+}
+
+export interface InvoiceListResponse {
+  total: number;
+  items: InvoiceRecord[];
+}
+
+// ---------- 发票生成 ----------
+
+export interface InvoiceLineItem {
+  name: string;
+  specification?: string;
+  unit?: string;
+  quantity?: number;
+  unit_price?: number;
+  amount: number;
+  tax_rate?: string;
+}
+
+export interface InvoiceGenerateRequest {
+  invoice_code?: string;
+  invoice_number?: string;
+  invoice_date?: string;
+  invoice_type?: string;
+  buyer_name?: string;
+  buyer_tax_id?: string;
+  seller_name: string;
+  seller_tax_id?: string;
+  amount?: number;
+  tax_amount?: number;
+  total_with_tax?: number;
+  items?: InvoiceLineItem[];
+  remarks?: string;
+  payee?: string;
+  reviewer?: string;
+  drawer?: string;
+}
+
+export interface InvoiceGenerateResponse {
+  invoice_number: string;
+  invoice_code: string;
+  object_name: string;
+  download_url: string;
+  total_with_tax: number;
+  status: string;
+}
