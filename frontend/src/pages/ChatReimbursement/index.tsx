@@ -5,13 +5,13 @@ import {
 import {
   SendOutlined, UploadOutlined, FilePdfOutlined, FileJpgOutlined, FileTextOutlined,
   LoadingOutlined, DeleteOutlined, PlusOutlined, MessageOutlined, EditOutlined,
-  ToolOutlined, BulbOutlined,
+  ToolOutlined, BulbOutlined, MailOutlined, CheckCircleOutlined,
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import {
   sendChatMessageStream, uploadInvoice,
   createConversation, listConversations, getConversation,
-  renameConversation, deleteConversation,
+  renameConversation, deleteConversation, sendReimbEmail,
 } from '@/services/api';
 import type { ChatMessage, ThinkingStep, ConversationSummary } from '@/types';
 
@@ -139,6 +139,7 @@ export default function ChatReimbursement() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [liveThinking, setLiveThinking] = useState<ThinkingStep[]>([]);
+  const [emailStatus, setEmailStatus] = useState<Record<string, 'loading' | 'sent' | 'error'>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const refreshConversations = useCallback(async () => {
@@ -201,6 +202,23 @@ export default function ChatReimbursement() {
         await refreshConversations();
       },
     });
+  };
+
+  const handleSendEmailFromChat = async (reimbId: string) => {
+    setEmailStatus((prev) => ({ ...prev, [reimbId]: 'loading' }));
+    try {
+      const res = await sendReimbEmail(reimbId);
+      if (res.sent) {
+        setEmailStatus((prev) => ({ ...prev, [reimbId]: 'sent' }));
+        message.success(res.message || '邮件已发送');
+      } else {
+        setEmailStatus((prev) => ({ ...prev, [reimbId]: 'error' }));
+        message.warning(res.message || '邮件发送失败');
+      }
+    } catch {
+      setEmailStatus((prev) => ({ ...prev, [reimbId]: 'error' }));
+      message.error('邮件发送失败');
+    }
   };
 
   const handleSend = async () => {
@@ -278,8 +296,18 @@ export default function ChatReimbursement() {
           case 'message':
             appendContent((event as Record<string, unknown>).content as string || '');
             break;
-          case 'done':
+          case 'done': {
+            const reimbId = (event as Record<string, unknown>).reimb_id as string | undefined;
+            if (reimbId) {
+              setMessages((prev) => {
+                const msgs = [...prev];
+                const last = msgs[msgs.length - 1];
+                if (last && last.role === 'assistant') msgs[msgs.length - 1] = { ...last, reimb_id: reimbId };
+                return msgs;
+              });
+            }
             break;
+          }
           case 'error':
             message.error(event.message || '处理异常');
             break;
@@ -382,6 +410,33 @@ export default function ChatReimbursement() {
                     <LoadingOutlined style={{ marginLeft: 8 }} spin />
                   )}
                 </div>
+                {/* 发送邮件按钮 */}
+                {msg.role === 'assistant' && msg.reimb_id && (
+                  <div style={{ marginTop: 6 }}>
+                    {emailStatus[msg.reimb_id] === 'sent' ? (
+                      <Tag icon={<CheckCircleOutlined />} color="success">邮件已发送</Tag>
+                    ) : (
+                      <Button
+                        size="small"
+                        icon={<MailOutlined />}
+                        loading={emailStatus[msg.reimb_id] === 'loading'}
+                        onClick={() => handleSendEmailFromChat(msg.reimb_id!)}
+                      >
+                        发送审批邮件
+                      </Button>
+                    )}
+                    {emailStatus[msg.reimb_id] === 'error' && (
+                      <Button
+                        size="small"
+                        icon={<MailOutlined />}
+                        onClick={() => handleSendEmailFromChat(msg.reimb_id!)}
+                        style={{ marginLeft: 8 }}
+                      >
+                        重试
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {/* 实时思考过程（本轮进行中） */}

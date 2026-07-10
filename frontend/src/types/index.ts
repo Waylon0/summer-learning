@@ -35,6 +35,7 @@ export interface ChatMessage {
   intent?: string;
   entities?: Record<string, unknown>;
   thinking?: ThinkingStep[];
+  reimb_id?: string;
 }
 
 export interface ChatRequest {
@@ -90,6 +91,7 @@ export interface SSEEvent {
   thought?: string;
   message?: string;
   elapsed_ms?: number;
+  reimb_id?: string;
 }
 
 // ---------- 报销单 ----------
@@ -310,6 +312,7 @@ export interface PdfGenerateResponse {
 export interface EmailSendResponse {
   sent: boolean;
   message: string;
+  reimb_id?: string;
 }
 
 // ---------- 流程演示 ----------

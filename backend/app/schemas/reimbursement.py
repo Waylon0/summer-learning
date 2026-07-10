@@ -100,6 +100,13 @@ class ReimbursementPdfResponse(BaseModel):
     status: str = "generated"                     # 生成状态
 
 
+class EmailSendResponse(BaseModel):
+    """邮件发送结果"""
+    sent: bool
+    message: str
+    reimb_id: str
+
+
 # =============================================================================
 # 3. 报销单创建请求
 # =============================================================================

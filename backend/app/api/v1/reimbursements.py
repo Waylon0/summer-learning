@@ -12,15 +12,22 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
+import os as _os
+import asyncio
+
 from app.core.database import get_db, engine
 from app.core.deps import get_current_user
 from app.services.reimbursement_svc import ReimbursementService
-from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+from app.services.pdf_svc import generate_and_store_reimbursement_pdf, _reimb_to_pdf_data
+from app.services.email_svc import send_email
+from app.services.ocr_svc import upload_file
+from app.agent.tools.reimburse_tools import generate_reimbursement_pdf
 from app.schemas.reimbursement import (
-    ReimbursementCreate, ReimbursementResponse, ReimbursementPdfResponse,
+    ReimbursementCreate, ReimbursementResponse, ReimbursementPdfResponse, EmailSendResponse,
 )
 from app.models.user import User
 from app.core.exceptions import InternalErrorException
+from app.core.config import get_settings
 
 router = APIRouter(prefix="/reimbursements", tags=["reimbursements"])
 
@@ -163,6 +170,85 @@ async def generate_reimbursement_pdf_endpoint(
 
     logger.info(f"报销单 PDF 生成: {reimb_id} by {user.username} → {info['object_name']}")
     return ReimbursementPdfResponse(**info)
+
+
+@router.post("/{reimb_id}/send-email", response_model=EmailSendResponse)
+async def send_reimbursement_email(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    发送报销审批邮件（含 PDF 附件）。
+
+    权限:
+      - employee: 仅可发送本人的报销单
+      - manager : 仅可发送本部门的报销单
+      - admin   : 全部
+
+    收件人使用配置项 APPROVER_EMAIL，不暴露给前端。
+    """
+    settings = get_settings()
+    svc = ReimbursementService(db)
+    reimb = await svc.get_by_id(reimb_id)
+
+    if user.role == "employee" and reimb.user_id != user.id:
+        raise HTTPException(status_code=403, detail="只能发送本人的报销单邮件")
+    if user.role == "manager" and reimb.department != user.department:
+        raise HTTPException(status_code=403, detail=f"无权发送{reimb.department}的报销单邮件")
+
+    to_email = settings.APPROVER_EMAIL
+    total_amount = float(reimb.total_amount or 0)
+
+    # 1. 生成 PDF（临时文件，发完邮件后删除）
+    pdf_data = _reimb_to_pdf_data(reimb)
+    pdf_path = await asyncio.to_thread(generate_reimbursement_pdf, pdf_data)
+
+    try:
+        # 2. 上传到 MinIO（供后续下载）
+        with open(pdf_path, "rb") as f:
+            content = f.read()
+        await upload_file(content, _os.path.basename(pdf_path), "application/pdf")
+
+        # 3. 发送邮件
+        subject = f"【报销审批】报销单 {reimb_id} 待审批 - ¥{total_amount:,.2f}"
+        body = f"""
+        <h2>报销审批通知</h2>
+        <p>报销单编号: <b>{reimb_id}</b></p>
+        <p>申请人: {reimb.user_name} ({reimb.department})</p>
+        <p>费用类型: {reimb.expense_type}</p>
+        <p>报销金额: <b>¥{total_amount:,.2f}</b></p>
+        <p>发票张数: {reimb.invoice_count}</p>
+        <p>请登录系统进行审批。</p>
+        """
+
+        sent = await send_email(
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            attachment_path=pdf_path,
+            attachment_name=f"报销单_{reimb_id}.pdf",
+        )
+
+        if sent:
+            logger.info(f"报销单邮件已发送: {reimb_id} → {to_email} by {user.username}")
+            return EmailSendResponse(
+                sent=True,
+                message=f"邮件已发送至 {to_email}",
+                reimb_id=reimb_id,
+            )
+        else:
+            logger.warning(f"报销单邮件发送失败: {reimb_id}（SMTP 未配置或认证失败）")
+            return EmailSendResponse(
+                sent=False,
+                message="邮件发送失败，请检查 SMTP 配置",
+                reimb_id=reimb_id,
+            )
+    finally:
+        try:
+            _os.remove(pdf_path)
+        except OSError:
+            pass
 
 
 def _to_response(reimb) -> ReimbursementResponse:
