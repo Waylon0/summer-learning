@@ -66,16 +66,16 @@ def require_role(*roles: str):
 
 def require_department_manager():
     """
-    部门审批守卫：
-    - manager 或 admin 可以通过
-    - employee 拒绝
-    多个部门经理中任意一个审批通过即可
+    审批守卫（两阶段审批入口）：
+    - employee 拒绝；
+    - manager / finance / admin 放行（具体能审批哪一阶段由 ApprovalService 按角色校验：
+      经理→部门经理阶段、财务→财务阶段、admin 可代签任意阶段）。
     """
     async def dependency(user: User = Depends(get_current_user)) -> User:
         if user.role == "employee":
             raise HTTPException(
                 status_code=403,
-                detail="只有部门经理或超级管理员可以执行审批操作",
+                detail="只有部门经理、财务或超级管理员可以执行审批操作",
             )
         return user
     return dependency

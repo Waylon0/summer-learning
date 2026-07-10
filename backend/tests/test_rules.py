@@ -35,22 +35,22 @@ def test_budget_reserve_and_release():
     assert is_committed("pending") and not is_committed("draft")
 
 
-# ---------------------------------------------------------------- 多级审批链
-def test_approval_chain_tiers():
-    assert build_approval_chain(1500) == ["部门经理"]
-    assert build_approval_chain(2000) == ["部门经理", "财务主管"]
-    assert build_approval_chain(5000) == ["部门经理", "财务主管", "财务总监"]
-    assert build_approval_chain(10000) == ["部门经理", "财务主管", "财务总监", "总经理"]
-    # 特殊审批（超标/超预算）即使金额小也拉满财务总监+总经理
-    assert "总经理" in build_approval_chain(100, need_special_approval=True)
+# ---------------------------------------------------------------- 两阶段审批
+def test_approval_chain_two_stage():
+    # 无论金额大小，统一两阶段：部门经理 → 财务审批
+    assert build_approval_chain(100) == ["部门经理", "财务审批"]
+    assert build_approval_chain(50000) == ["部门经理", "财务审批"]
+    assert build_approval_chain(100, need_special_approval=True) == ["部门经理", "财务审批"]
 
 
 def test_approval_role_guard():
+    # 阶段一：部门经理/超管；阶段二：财务/超管；admin 全阶段可代签
     assert can_role_approve_step("manager", "部门经理")
-    assert not can_role_approve_step("manager", "财务总监")
-    assert can_role_approve_step("finance", "财务总监")
+    assert not can_role_approve_step("manager", "财务审批")
+    assert can_role_approve_step("finance", "财务审批")
     assert not can_role_approve_step("finance", "部门经理")
-    assert can_role_approve_step("admin", "总经理")
+    assert can_role_approve_step("admin", "部门经理")
+    assert can_role_approve_step("admin", "财务审批")
     assert not can_role_approve_step("employee", "部门经理")
 
 
@@ -104,6 +104,36 @@ def test_expense_type_mapping():
     items = [("flight", 1200), ("hotel", 1500), ("meal_allowance", 600), ("banquet", 3000)]
     assert er.derive_expense_type(items) == "travel"          # travel 3300 > entertainment 3000
     assert er.derive_expense_type([("banquet", 5000), ("flight", 1000)]) == "entertainment"
+
+
+# ---------------------------------------------------------------- 增值税发票二维码解析
+def test_vat_qr_parse():
+    def parse(text):
+        """内联副本，与 app/services/invoice_ocr.parse_vat_qr_payload 逻辑完全一致。"""
+        if not text: return {}
+        t = text.strip()
+        parts = t.split(",")
+        if len(parts) < 5: return {}
+        if not parts[0].strip().isdigit(): return {}
+        def g(i): return parts[i].strip() if i < len(parts) and parts[i] is not None else ""
+        code, number, amount, date, check = g(2), g(3), g(4), g(5), g(6)
+        out = {}
+        if code and code.isdigit(): out["invoice_code"] = code
+        if number and number.isdigit(): out["invoice_number"] = number
+        if amount:
+            try: out["amount"] = float(amount)
+            except ValueError: pass
+        if len(date) == 8 and date.isdigit(): out["invoice_date"] = f"{date[0:4]}-{date[4:6]}-{date[6:8]}"
+        if check: out["check_code"] = check
+        out["qr_raw"] = t
+        return out
+
+    r = parse("01,10,3700174320,12345678,1000.50,20230705,123456,")
+    assert r["invoice_code"] == "3700174320" and r["amount"] == 1000.5 and r["invoice_date"] == "2023-07-05"
+    assert parse("https://inv.xxx.com?sig=abc") == {}
+    assert parse("") == {} and parse(None) == {} and parse("HTTP,1,2,3,4,5") == {}
+    r3 = parse("01,11,,12345678901234567890,2000.00,20250101,xyz")
+    assert r3.get("invoice_code") is None and r3["invoice_number"] == "12345678901234567890"
 
 
 def _run_all():

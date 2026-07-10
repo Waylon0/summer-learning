@@ -32,11 +32,18 @@ settings = get_settings()
 # =============================================================================
 _INVOICE_OCR_PROMPT = """你是一个专业的中国增值税发票识别助手。请从发票内容中提取以下字段，只返回 JSON。
 
+识别要求（重要）:
+  - 图片可能是拍照/扫描件，存在倾斜、模糊、红色印章遮挡、水印等干扰，请尽力辨认。
+  - 红色发票专用章通常盖在金额/号码区域，注意透过印章读取其下方文字。
+  - 全电发票(数电票)：可能【没有发票代码】，发票号码为 20 位；据实填写，缺失留空。
+  - 【绝不臆造】：任何看不清/不确定的字段，字符串填 ""、数字填 0，不要猜测或编造。
+  - 金额务必分清：合计金额(不含税) / 税额 / 价税合计(小写数字)。
+
 发票字段说明:
   {
     # --- 发票头部 ---
-    "invoice_code": "发票代码（12位数字，发票左上角）",
-    "invoice_number": "发票号码（8位数字，发票右上角）",
+    "invoice_code": "发票代码（一般12位数字，发票左上角；数电票可能无，留空）",
+    "invoice_number": "发票号码（一般8位；数电票为20位，发票右上角）",
     "invoice_date": "开票日期（YYYY-MM-DD格式）",
     "invoice_type": "发票类型: 增值税普通发票/增值税专用发票/增值税电子普通发票/其他",
 
@@ -85,9 +92,11 @@ async def ocr_recognize_invoice(file_path: str) -> dict:
     """
     识别上传的票据文件（图片/PDF）中的发票信息。
 
-    图片文件：通过 DeepSeek Vision 多模态识别
-    PDF 文件：先用 pypdf 提取文本，再用 DeepSeek 结构化
-    无文件时：返回空结构
+    P0 增强流程（依赖可选 extra="ocr"，缺失自动降级）：
+      1. 归一化：PDF → 逐页渲染成高清 PNG（治好扫描件/图片型 PDF）；图片原样。
+      2. 视觉识别：对（渲染后的/原）图做多模态识别。
+      3. 二维码取证：解码增值税发票二维码，用高置信"真值"覆盖/补全 代码/号码/日期/金额。
+    未安装 ocr 依赖时：PDF 退回 pypdf 文本抽取，图片走原视觉识别（无回归）。
     """
     if not file_path:
         logger.info("OCR skipped: no file path provided")
@@ -103,13 +112,56 @@ async def ocr_recognize_invoice(file_path: str) -> dict:
         logger.warning(f"MinIO download failed for {file_path}: {e}")
         return _empty_invoice_result(file_path)
 
-    if ext in (".png", ".jpg", ".jpeg", ".webp"):
-        return _ocr_image(content, file_path)
-    elif ext == ".pdf":
+    from app.services import invoice_ocr
+
+    # 1) 归一化为图像（图片透传；PDF 渲染成 PNG，需 pymupdf）
+    images = invoice_ocr.normalize_to_images(content, ext)
+
+    if images:
+        # 2) 视觉识别（对第一页/主图）
+        result = _ocr_image(images[0], file_path)
+        # 3) 二维码取证（跨页查找，取到即用）
+        qr = {}
+        for img in images:
+            qr = invoice_ocr.decode_vat_qr(img)
+            if qr:
+                break
+        return _merge_qr_into_result(result, qr)
+
+    # 无法渲染（如 PDF 且未装 pymupdf）→ 退回文本抽取
+    if ext == ".pdf":
         return _ocr_pdf(content, file_path)
-    else:
-        logger.warning(f"Unsupported file type: {ext}")
-        return _empty_invoice_result(file_path)
+
+    logger.warning(f"Unsupported file type: {ext}")
+    return _empty_invoice_result(file_path)
+
+
+def _merge_qr_into_result(result: dict, qr: dict) -> dict:
+    """把二维码解出的高置信字段合并进视觉识别结果。
+
+    - 发票代码/号码/开票日期：二维码为准（覆盖视觉结果，最可靠）；
+    - 金额：仅当视觉未识别出金额时用二维码金额补全（避免误覆盖价税合计）；
+    - 打上 qr_verified 标记，供上层/前端提示"已二维码验真"。
+    """
+    if not qr:
+        result.setdefault("qr_verified", False)
+        return result
+    for k in ("invoice_code", "invoice_number", "invoice_date"):
+        if qr.get(k):
+            result[k] = str(qr[k])
+    if (not result.get("amount")) and qr.get("amount"):
+        result["amount"] = float(qr["amount"])
+        if not result.get("total_with_tax"):
+            result["total_with_tax"] = float(qr["amount"])
+    if qr.get("check_code"):
+        result["check_code"] = qr["check_code"]
+    result["qr_verified"] = True
+    result["qr_raw"] = qr.get("qr_raw", "")
+    logger.info(
+        f"QR 取证成功: code={qr.get('invoice_code','')} number={qr.get('invoice_number','')} "
+        f"date={qr.get('invoice_date','')}"
+    )
+    return result
 
 
 def _ocr_image(image_bytes: bytes, file_path: str) -> dict:
@@ -218,6 +270,7 @@ def _parse_llm_invoice(raw: str, file_path: str) -> dict:
             "reviewer": str(data.get("reviewer", "")),
             "drawer": str(data.get("drawer", "")),
             "file_path": file_path,
+            "qr_verified": False,
         }
         logger.info(
             f"OCR result: amount={result['amount']} seller={result['seller_name']} "
@@ -238,6 +291,7 @@ def _empty_invoice_result(file_path: str) -> dict:
         "items": [],
         "remarks": "", "payee": "", "reviewer": "", "drawer": "",
         "file_path": file_path,
+        "qr_verified": False,
     }
 
 
@@ -480,8 +534,14 @@ def generate_reimbursement_pdf(reimb_data: dict) -> str:
     c.rect(margin + 3, margin + 3, W - 2 * margin - 6, H - 2 * margin - 6)
 
     # ---- 公司抬头 ----
+    # 抬头取报销主体公司：优先 reimb_data 里的公司/购买方，其次配置的公司全称。
+    _company = (
+        reimb_data.get("company_name")
+        or reimb_data.get("buyer_name")
+        or settings.COMPANY_NAME
+    )
     c.setFont(title_font, 22)
-    c.drawCentredString(W / 2, H - margin - 18 * mm, "中国石油华东分公司")
+    c.drawCentredString(W / 2, H - margin - 18 * mm, str(_company))
     c.setFont(body_font, 14)
     c.drawCentredString(W / 2, H - margin - 26 * mm, "费 用 报 销 单")
 
@@ -847,7 +907,7 @@ async def query_reimbursement_status(
                             for a in approvals
                         ] or [
                             {"step": 1, "approver": "部门经理", "action": "待审批"},
-                            {"step": 2, "approver": "财务总监", "action": "等待中"},
+                            {"step": 2, "approver": "财务审批", "action": "等待中"},
                         ],
                     }
                 return {"reimb_id": reimb_id, "status": "not_found", "steps": []}

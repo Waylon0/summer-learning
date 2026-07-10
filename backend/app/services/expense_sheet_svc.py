@@ -606,7 +606,7 @@ class ExpenseSheetService:
         reimb.need_special_approval = need_special
         reimb.status = "pending"
 
-        # 生成整条多级审批链（按金额/特殊标记推导层级）
+        # 生成两阶段审批链（部门经理 → 财务审批）
         chain = await seed_approval_chain(self.db, reimb)
         await self.db.commit()
         logger.info(f"报销单已提交: {reimb.id} total={float(total)} special={need_special} chain={chain}")

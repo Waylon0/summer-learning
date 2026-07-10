@@ -34,11 +34,11 @@ from app.core.exceptions import (
 
 
 async def seed_approval_chain(db: AsyncSession, reimb: Reimbursement) -> list[str]:
-    """为报销单创建整条待审批链：按金额/特殊标记推导层级，每一步落一条
-    action='pending' 的占位审批记录（approver 暂存该步的角色标题）。
+    """为报销单创建两阶段待审批链：每阶段落一条 action='pending' 的占位审批记录
+    （approver 暂存该阶段角色标题，如"部门经理""财务审批"）。
 
-    这样前端可展示完整待审批链，审批推进时逐条把最早的 pending 记录置为
-    approve/reject/return，只有全部通过才最终 approved（真正的多级审批）。
+    审批推进时逐条把最早的 pending 记录置为 approve/reject/return：阶段一（本部门
+    任一经理/超管）通过后进入阶段二（任一财务/超管），两阶段都通过才最终 approved。
     不在此提交事务，由调用方统一 commit。
     """
     chain = build_approval_chain(float(reimb.total_amount or 0), bool(reimb.need_special_approval))
@@ -51,9 +51,10 @@ async def seed_approval_chain(db: AsyncSession, reimb: Reimbursement) -> list[st
     )).scalar() or 0
     for offset, title in enumerate(chain):
         idx = max_step + offset + 1
-        comment = f"等待{title}审批"
+        comment = f"等待{title}"
+        # 财务阶段（最后一阶段）遇特殊标记时，提示财务审慎复核
         if special and offset == len(chain) - 1:
-            comment += "（金额较大/预算超标，需逐级审批）"
+            comment += "（金额较大/超标/超预算，请审慎复核）"
         db.add(ApprovalRecord(
             reimbursement_id=reimb.id, approver=title, step=idx,
             action="pending", comment=comment,
@@ -188,7 +189,7 @@ class ReimbursementService:
             )
             self.db.add(inv)
 
-        # --- 步骤7：生成多级审批链 ---
+        # --- 步骤7：生成两阶段审批链 ---
         await seed_approval_chain(self.db, reimb)
 
         # --- 步骤8：提交事务 ---
@@ -369,20 +370,21 @@ class ApprovalService:
         comment: str = None, approver_role: str = None,
     ) -> ApprovalRecord:
         """
-        记录一条审批操作，驱动【多级审批状态机】。
+        记录一条审批操作，驱动【两阶段审批状态机】。
 
         规则:
-          - 报销单提交时已按金额生成整条待审批链（若干 pending 占位记录）。
-          - approve：把最早一条 pending 记录置为 approve；仅当【全部层级】都通过，
-            报销单才 approved；否则保持 pending 等待下一级。
+          - 报销单提交时已生成两阶段待审批链（部门经理、财务审批 两条 pending 占位记录）。
+          - approve：把最早一条 pending 记录置为 approve；仅当【两阶段】都通过，
+            报销单才 approved；否则保持 pending 等待下一阶段。
           - reject / return：终止流程（rejected / returned），释放已占用预算，
             并把后续未处理的 pending 记录标记为 cancelled。
-          - 越权拦截：approver_role 不匹配当前步骤要求的角色则拒绝。
-          - 同一人不得连续审批相邻两级（admin 除外）。
+          - 越权拦截：approver_role 不匹配当前阶段要求的角色则拒绝
+            （经理→部门经理阶段、财务→财务阶段、admin 可代签任意阶段）。
+          - 同一人不得包办两个阶段（admin 除外）。
 
         Raises:
           ReimbursementNotFoundError: 报销单不存在
-          BusinessException: 动作非法 / 状态非待审批 / 越权 / 连续审批
+          BusinessException: 动作非法 / 状态非待审批 / 越权 / 同一人包办两阶段
         """
         from app.core.exceptions import BusinessException
 
@@ -426,11 +428,11 @@ class ApprovalService:
                 error_code="APPROVAL_FORBIDDEN",
             )
 
-        # --- 步骤6：同一人不得连续审批相邻两级（admin 除外）---
+        # --- 步骤6：同一人不得包办两个阶段（admin 除外）---
         if action == "approve" and (approver_role or "").lower() != "admin" \
                 and approved_rows and approved_rows[-1].approver == approver:
             raise BusinessException(
-                message="同一审批人不能连续审批相邻两个级别，请由其他审批人处理下一级。",
+                message="同一审批人不能同时包办部门经理与财务两个阶段，请由其他审批人处理下一阶段。",
                 error_code="CONSECUTIVE_APPROVAL",
             )
 

@@ -861,7 +861,7 @@ Authorization: Bearer <token>
 
 ---
 
-## 10. 分步报销 · 多级审批 · 出纳付款（v2.1）
+## 10. 分步报销 · 两阶段审批 · 出纳付款
 
 > 本节汇总 v2.1「严谨财务管控」相关的接口与语义变更，完整设计见
 > `docs/DESIGN.md` 与 `docs/OPTIMIZATION_LOG.md`。以下接口均需登录（Bearer Token），
@@ -877,7 +877,7 @@ Authorization: Bearer <token>
 | DELETE | `/api/v1/reimbursements/{id}/items/{seq}` | 删除明细 |
 | POST | `/api/v1/reimbursements/{id}/items/{seq}/invoice` | 为明细关联发票（金额须真实、查重、金额勾稽） |
 | GET | `/api/v1/reimbursements/{id}/validate` | 提交前校验（返回 errors/warnings/missing_invoices/over_limit） |
-| POST | `/api/v1/reimbursements/{id}/submit` | 提交进入多级审批（**支持退回后重新提交**） |
+| POST | `/api/v1/reimbursements/{id}/submit` | 提交进入两阶段审批（**支持退回后重新提交**） |
 | POST | `/api/v1/reimbursements/{id}/reopen` | **将"已退回"的报销单重新打开为草稿** |
 
 **添加/修改明细请求体（ExpenseItemCreate）**
@@ -915,24 +915,24 @@ Authorization: Bearer <token>
 | subsidy_amount | 补贴额（免票部分） |
 | tax_amount | **可抵扣进项税额合计** |
 
-### 10.2 多级审批
+### 10.2 两阶段审批
 
 `POST /api/v1/approval`（部门经理 / 财务 / 管理员）
 
-- 提交时按金额自动生成审批链：<¥2,000 部门经理；¥2,000–5,000 +财务主管；
-  ¥5,000–10,000 +财务总监；≥¥10,000 或超标/超预算/整单≥¥50,000 +总经理。
-- `approve` **逐级推进**，全部通过才 `approved`；任一级 `reject`→`rejected`、`return`→`returned`
-  （均**释放已占用预算**，并作废后续未处理步骤）。
-- 拦截：员工无权；经理限本部门；财务/管理员可跨部门；角色须匹配当前步骤；
-  同一人不得连续审批相邻两级；仅 `pending` 可审批。
+- 提交时生成**两阶段串联**审批链：**阶段一 部门经理 → 阶段二 财务审批**（不再按金额分级）。
+- 每阶段"任一人通过即可"：本部门任一经理通过阶段一 → 任一财务通过阶段二 → 整单 `approved`。
+- 任一阶段 `reject`→`rejected`、`return`→`returned`（均**释放已占用预算**，后阶段作废）。
+- 拦截：员工无权；**经理只能审阶段一且限本部门**；**财务只能审阶段二、可跨部门**；
+  admin 可代签任意阶段；同一人不得包办两个阶段（admin 除外）；仅 `pending` 可审批。
+- 金额较大/超标/超预算的单标记 `need_special_approval`，仅提示财务审慎复核，**不增加层级**。
 
 **错误码补充**
 
 | 状态码 | error_code | 场景 |
 |--------|-----------|------|
 | 400 | `NOT_PENDING` | 报销单非待审批状态 |
-| 400 | `APPROVAL_FORBIDDEN` | 当前角色无权审批该步骤 |
-| 400 | `CONSECUTIVE_APPROVAL` | 同一人连续审批相邻两级 |
+| 400 | `APPROVAL_FORBIDDEN` | 当前角色无权审批该阶段（经理审财务阶段 / 财务审经理阶段等） |
+| 400 | `CONSECUTIVE_APPROVAL` | 同一人试图包办两个阶段（admin 除外） |
 | 400 | `DUPLICATE_INVOICE` | 发票重复报销 |
 | 400 | `INVOICE_AMOUNT_REQUIRED` / `INVOICE_AMOUNT_MISMATCH` | 发票金额缺失/超额 |
 | 400 | `EXCHANGE_RATE_REQUIRED` | 外币缺汇率 |

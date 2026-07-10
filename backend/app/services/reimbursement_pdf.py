@@ -88,8 +88,9 @@ def render_reimbursement_pdf(data: dict) -> str:
         return f"¥{float(v or 0):,.2f}"
 
     # ---- 抬头 ----
+    company_name = (data.get("company_name") or "").strip() or "公司报销单"
     c.setFont(font, 20)
-    c.drawCentredString(W / 2, state["y"] - 6 * mm, "中国石油华东分公司")
+    c.drawCentredString(W / 2, state["y"] - 6 * mm, company_name)
     c.setFont(font, 14)
     c.drawCentredString(W / 2, state["y"] - 14 * mm, "费 用 报 销 单")
     state["y"] -= 22 * mm

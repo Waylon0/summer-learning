@@ -22,6 +22,7 @@ from enum import Enum
 class UserRole(str, Enum):
     EMPLOYEE = "employee"
     MANAGER = "manager"
+    FINANCE = "finance"
     ADMIN = "admin"
 
 

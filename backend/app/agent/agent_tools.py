@@ -183,20 +183,27 @@ async def ocr_uploaded_invoices() -> dict:
         return {"has_files": False, "invoices": [], "total_amount": 0.0,
                 "message": "本轮没有检测到上传的发票文件。"}
     invoices, total = [], 0.0
+    qr_count = 0
     for path in attachments:
         try:
             r = await ocr_recognize_invoice(path)
             if r.get("amount", 0) > 0:
                 invoices.append(r)
                 total += float(r.get("amount", 0) or 0)
+                if r.get("qr_verified"):
+                    qr_count += 1
         except Exception as e:
             logger.warning(f"OCR failed for {path}: {e}")
+    qr_note = f"（其中 {qr_count} 张已通过增值税发票二维码验真）" if qr_count else ""
     return {
         "has_files": True,
         "invoice_count": len(invoices),
         "total_amount": round(total, 2),
         "invoices": invoices,
-        "message": f"识别到 {len(invoices)} 张发票，合计 ¥{total:,.2f}" if invoices else "上传的文件未能识别出有效发票。",
+        "message": (
+            f"识别到 {len(invoices)} 张发票{qr_note}，合计 ¥{total:,.2f}"
+            if invoices else "上传的文件未能识别出有效发票。"
+        ),
     }
 
 
@@ -552,6 +559,14 @@ async def submit_reimbursement(reimb_id: str = "") -> dict:
     except Exception as e:
         logger.warning(f"报销单 PDF 生成失败（不阻断）: {e}")
     result["pdf_download_url"] = download_url
+    # 把真实下载地址并入面向用户的 message，避免 LLM 另行编造链接；
+    # 无地址时明确告知不要虚构。
+    if download_url:
+        result["message"] = (result.get("message", "") +
+                             f" 报销单 PDF 下载地址：{download_url}（请原样提供给用户，勿改写）。")
+    else:
+        result["message"] = (result.get("message", "") +
+                             " PDF 稍后可在系统「文档中心/进度查询」下载（本次未生成下载地址，请勿编造链接）。")
     return result
 
 
@@ -584,9 +599,12 @@ async def generate_reimbursement_pdf_doc(reimb_id: str) -> dict:
         except Exception as e:
             logger.error(f"生成报销单 PDF 失败: {e}")
             return {"success": False, "message": "报销单 PDF 生成失败，请稍后重试。"}
+    _url = info.get("download_url", "")
     return {"success": True, "reimb_id": reimb_id,
-            "pdf_download_url": info.get("download_url", ""),
-            "message": "报销单 PDF 已生成。"}
+            "pdf_download_url": _url,
+            "message": (f"报销单 PDF 已生成，下载地址：{_url}（请原样提供给用户，勿改写或编造）。"
+                        if _url else
+                        "报销单 PDF 已生成，可在系统「文档中心」下载（本次无下载地址，请勿编造链接）。")}
 
 
 # =============================================================================

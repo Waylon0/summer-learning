@@ -20,7 +20,7 @@ router = APIRouter(prefix="/admin/users", tags=["admin"])
 
 class RoleUpdateRequest(BaseModel):
     """变更用户角色请求体"""
-    role: str = Field(..., description="目标角色: employee / manager / admin")
+    role: str = Field(..., description="目标角色: employee / manager / finance / admin")
 
 
 @router.get("")
@@ -44,10 +44,10 @@ async def update_user_role(
     """
     变更用户角色（仅超管）。
 
-    role 可选: employee / manager / admin（支持升级与降级）。
+    role 可选: employee / manager / finance / admin（支持升级与降级）。
     返回更新后的用户信息（UserInfo）。
     """
-    valid_roles = {"employee", "manager", "admin"}
+    valid_roles = {"employee", "manager", "finance", "admin"}
     if data.role not in valid_roles:
         raise HTTPException(status_code=400, detail=f"无效目标角色: {data.role}，可选: {sorted(valid_roles)}")
 

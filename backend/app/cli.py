@@ -6,6 +6,7 @@ app/cli.py — ReimburseAgent 一键启动命令行工具 (跨平台)
   cd backend
   uv run reimburse start           # 启动数据层 + 后端
   uv run reimburse dev             # 开发模式 (DEBUG + hot reload)
+  uv run reimburse stop            # 停止后端 (若报 os error 32：改用 stop.bat 或 uv run --no-sync reimburse stop)
   uv run reimburse data start      # 仅启动数据层
   uv run reimburse data stop       # 停止数据层
   uv run reimburse data status     # 查看数据层状态
@@ -200,6 +201,115 @@ def start_backend(reload: bool = True, port: int = 8000, host: str = "0.0.0.0"):
 
 
 # ============================================================================
+# 停止后端（供 Ctrl+C 收不掉时，在新终端执行 `uv run reimburse stop`）
+# ============================================================================
+def _pids_on_port(port: int) -> set[str]:
+    """返回监听指定端口的进程 PID（跨平台，不依赖第三方库）。"""
+    pids: set[str] = set()
+    try:
+        if IS_WINDOWS:
+            r = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True, text=True, encoding="utf-8", errors="ignore", shell=True,
+            )
+            for line in r.stdout.splitlines():
+                if f":{port} " in line and "LISTENING" in line.upper():
+                    pid = line.split()[-1].strip()
+                    if pid.isdigit():
+                        pids.add(pid)
+        else:
+            r = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True,
+            )
+            pids.update(x.strip() for x in r.stdout.splitlines() if x.strip().isdigit())
+    except Exception:
+        pass
+    return pids
+
+
+def _pids_by_cmdline(port: int) -> set[str]:
+    """按命令行匹配后端进程（reimburse start/dev 或 uvicorn app.main:app）。
+
+    只匹配 start/dev 与 app.main:app，故【不会】匹配到本 `reimburse stop` 自身。
+    """
+    pids: set[str] = set()
+    try:
+        if IS_WINDOWS:
+            ps = (
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'reimburse.*(start|dev)' "
+                "-or $_.CommandLine -match 'app\\.main:app' } | "
+                "Select-Object -ExpandProperty ProcessId"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, encoding="utf-8", errors="ignore", shell=True,
+            )
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.add(line)
+        else:
+            for pattern in ("reimburse start", "reimburse dev", "app.main:app"):
+                r = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+                pids.update(x.strip() for x in r.stdout.splitlines() if x.strip().isdigit())
+    except Exception:
+        pass
+    return pids
+
+
+def _kill_tree(pid: str) -> None:
+    """结束指定 PID 及其整棵子进程树（Windows: taskkill /T /F）。"""
+    try:
+        if IS_WINDOWS:
+            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"],
+                           capture_output=True, text=True, shell=True)
+        else:
+            subprocess.run(["pkill", "-TERM", "-P", pid], capture_output=True, text=True)
+            subprocess.run(["kill", "-9", pid], capture_output=True, text=True)
+    except Exception:
+        pass
+
+
+def stop_backend(port: int = 8000):
+    """强制停止后端服务（不影响热重载运行逻辑，仅用于兜底停止）。
+
+    综合"端口监听 + 命令行匹配"两种方式定位进程，再整棵树 /F 结束，
+    最后校验端口是否释放；必要时二次清理，力求"百分百"停掉。
+    """
+    print(f"🛑 正在停止后端 (port={port})...")
+    self_pid = str(os.getpid())
+
+    targets = _pids_on_port(port) | _pids_by_cmdline(port)
+    targets.discard(self_pid)  # 绝不杀自己
+
+    if not targets:
+        print("   未发现正在运行的后端进程（端口空闲）。")
+        return
+
+    for pid in sorted(targets, key=lambda x: int(x)):
+        _kill_tree(pid)
+        print(f"   已结束进程树 PID={pid}")
+
+    # 校验 + 二次兜底清理
+    time.sleep(1.5)
+    remaining = _pids_on_port(port)
+    remaining.discard(self_pid)
+    if remaining:
+        for pid in sorted(remaining, key=lambda x: int(x)):
+            _kill_tree(pid)
+        time.sleep(1.0)
+        remaining = _pids_on_port(port)
+        remaining.discard(self_pid)
+
+    if remaining:
+        print(f"   ⚠️  端口 {port} 仍被占用: {sorted(remaining)}，请稍后重试或手动结束。")
+    else:
+        print(f"   ✅ 后端已停止，端口 {port} 已释放。")
+
+
+# ============================================================================
 # 命令处理
 # ============================================================================
 def cmd_start(args):
@@ -213,6 +323,10 @@ def cmd_dev(args):
     data_start()
     db_init()
     start_backend(reload=True, port=args.port, host=args.host)
+
+
+def cmd_stop(args):
+    stop_backend(port=args.port)
 
 
 def cmd_data(args):
@@ -271,6 +385,10 @@ def main():
     p_dev.add_argument("--port", type=int, default=8000)
     p_dev.add_argument("--host", default="0.0.0.0")
     p_dev.set_defaults(func=cmd_dev)
+
+    p_stop = sub.add_parser("stop", help="停止后端服务 (Ctrl+C 收不掉时执行；若 uv run 报 os error 32，请用 --no-sync 或 stop.bat)")
+    p_stop.add_argument("--port", type=int, default=8000, help="后端端口，默认 8000")
+    p_stop.set_defaults(func=cmd_stop)
 
     p_data = sub.add_parser("data", help="数据层管理")
     p_data.add_argument("action", choices=["start", "stop", "status"])

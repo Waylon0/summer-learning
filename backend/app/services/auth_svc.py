@@ -33,7 +33,7 @@ class AuthService:
         # 注册强制为 employee
         if role != "employee":
             raise BusinessException(
-                message="注册时只能选择「员工」角色，部门经理和超级管理员由系统管理员分配",
+                message="注册时只能选择「员工」角色，部门经理/财务/超级管理员由系统管理员分配",
                 error_code="INVALID_ROLE",
             )
 

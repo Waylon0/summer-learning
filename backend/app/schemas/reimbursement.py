@@ -85,6 +85,9 @@ class InvoiceInfo(BaseModel):
     # 文件路径
     file_path: str = ""                  # MinIO 存储路径
 
+    # 识别溯源
+    qr_verified: bool = False            # 是否经增值税发票二维码验真
+
 
 # =============================================================================
 # 2b. 报销单 PDF 生成响应

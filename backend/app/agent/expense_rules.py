@@ -122,7 +122,7 @@ SUBTYPE_RULES: dict[str, SubtypeRule] = {
 # 大额交易的统一发票门槛（补充规则）：任何单笔金额 ≥ 该值一律需要发票
 GLOBAL_INVOICE_THRESHOLD = 500.0
 
-# 整单总额超过该值 → 需上级/财务总监特殊审批
+# 整单总额超过该值 → 标记需特殊审批（提示财务在阶段二审慎复核，不增加审批层级）
 SPECIAL_APPROVAL_THRESHOLD = 50000.0
 
 

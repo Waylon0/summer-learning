@@ -25,12 +25,16 @@ from app.services.ocr_svc import upload_file, get_file_url
 def _reimb_to_pdf_data(reimb: Reimbursement) -> dict:
     """把 Reimbursement ORM 对象（含 items/invoices/approvals）转成 PDF 生成所需字典。"""
     from app.agent import expense_rules as rules
+    from app.core.config import get_settings
     from collections import defaultdict
 
     # 明细行（按大类分组）
     items = sorted(reimb.items or [], key=lambda x: x.seq)
     cat_groups: dict[str, list] = defaultdict(list)
     cat_subtotal: dict[str, float] = defaultdict(float)
+    # 报销单抬头 = 报销主体公司（发票购买方 buyer_name）；取不到则用配置的公司全称。
+    # 注意：绝不能用 seller_name（那是供应商），否则抬头会变成航司/酒店等第三方。
+    company_name = ""
     for it in items:
         cat_subtotal[it.category] += float(it.amount or 0)
         invs = [{
@@ -40,6 +44,11 @@ def _reimb_to_pdf_data(reimb: Reimbursement) -> dict:
             "amount": float(v.amount or 0),
             "seller_name": v.seller_name or "",
         } for v in (it.invoices or [])]
+        if not company_name:
+            for v in (it.invoices or []):
+                if (v.buyer_name or "").strip():
+                    company_name = v.buyer_name.strip()
+                    break
         cat_groups[it.category].append({
             "seq": it.seq,
             "subtype_label": rules.subtype_label(it.subtype),
@@ -73,6 +82,7 @@ def _reimb_to_pdf_data(reimb: Reimbursement) -> dict:
         })
     return {
         "id": reimb.id,
+        "company_name": company_name or get_settings().COMPANY_NAME,
         "user_name": reimb.user_name,
         "department": reimb.department,
         "expense_type": reimb.expense_type,
