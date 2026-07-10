@@ -10,6 +10,8 @@ import {
   LogoutOutlined,
   UserOutlined,
   ContainerOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import ChatReimbursement from './pages/ChatReimbursement';
 import Dashboard from './pages/Dashboard';
@@ -61,6 +63,7 @@ const roleTitles: Record<string, string> = {
 export default function App() {
   const { user, token, loading, initialize, logout } = useAuthStore();
   const [active, setActive] = useState(roleDefaults[user?.role || 'employee'] || 'chat');
+  const [collapsed, setCollapsed] = useState(false);
   const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected' | 'loading'>('loading');
 
   useEffect(() => { initialize(); }, [initialize]);
@@ -94,8 +97,27 @@ export default function App() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      <style>{`
+        .ant-menu-item {
+          transition: all 0.25s ease !important;
+        }
+        .ant-menu-item:hover {
+          transform: scale(1.04) !important;
+        }
+        .ant-layout-sider-trigger:hover .anticon {
+          transform: scale(1.3) !important;
+          transition: transform 0.25s ease !important;
+        }
+        .ant-layout-sider-trigger .anticon {
+          transition: transform 0.25s ease !important;
+        }
+      `}</style>
       <Sider
-        width={220}
+        width={200}
+        collapsible
+        collapsed={collapsed}
+        onCollapse={setCollapsed}
+        trigger={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
         style={{
           background: 'linear-gradient(180deg, #001529 0%, #002140 100%)',
           borderRight: '1px solid rgba(255,255,255,0.06)',
@@ -111,8 +133,31 @@ export default function App() {
             flexDirection: 'column',
           }}
         >
-          <Title level={5} style={{ color: '#fff', margin: 0, fontWeight: 600, letterSpacing: 1 }}>
-            ReimburseAgent
+          <Title level={5} style={{ color: '#fff', margin: 0, fontWeight: 600, fontSize: collapsed ? 16 : undefined, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            <span style={{ letterSpacing: collapsed ? 6 : 3, transition: 'letter-spacing 0.3s ease' }}>
+              R
+              <span style={{
+                display: 'inline-block',
+                maxWidth: collapsed ? 0 : 300,
+                opacity: collapsed ? 0 : 1,
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                verticalAlign: 'bottom',
+                transition: 'max-width 0.3s ease, opacity 0.2s ease',
+              }}>EIMBURSE</span>
+            </span>{' '}
+            <span style={{ letterSpacing: collapsed ? 6 : 3, transition: 'letter-spacing 0.3s ease' }}>
+              A
+              <span style={{
+                display: 'inline-block',
+                maxWidth: collapsed ? 0 : 300,
+                opacity: collapsed ? 0 : 1,
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                verticalAlign: 'bottom',
+                transition: 'max-width 0.3s ease, opacity 0.2s ease',
+              }}>GENT</span>
+            </span>
           </Title>
           <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
             {user.department} · {({ employee: '员工', manager: '经理', admin: '管理员' })[user.role] || user.role}
