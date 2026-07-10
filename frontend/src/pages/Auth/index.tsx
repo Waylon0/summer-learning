@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, Form, Input, Button, Select, Tabs, message, Typography } from 'antd';
+import { Card, Form, Input, Button, Select, Tabs, message, Typography, ConfigProvider } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined, IdcardOutlined, TeamOutlined } from '@ant-design/icons';
 import { login, register } from '@/services/api';
 import { useAuthStore } from '@/stores';
@@ -57,7 +57,7 @@ export default function AuthPage() {
             <Input.Password prefix={<LockOutlined />} placeholder="密码" />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" loading={loading} block>
+            <Button type="primary" htmlType="submit" loading={loading} block className="auth-btn">
               登 录
             </Button>
           </Form.Item>
@@ -96,7 +96,7 @@ export default function AuthPage() {
             <Input prefix={<MailOutlined />} placeholder="邮箱（可选）" />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" loading={loading} block>
+            <Button type="primary" htmlType="submit" loading={loading} block className="auth-btn">
               注 册
             </Button>
           </Form.Item>
@@ -106,29 +106,42 @@ export default function AuthPage() {
   ];
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    }}>
-      <Card
-        style={{ width: 420, borderRadius: 12, boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}
-        styles={{ body: { padding: '32px 32px 24px' } }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <Title level={3} style={{ margin: 0, color: '#1677ff' }}>ReimburseAgent</Title>
-          <Text type="secondary">企业财务报销助手</Text>
-        </div>
-        <Tabs
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          centered
-          items={tabItems}
-          style={{ marginBottom: -16 }}
-        />
-      </Card>
-    </div>
+    <ConfigProvider theme={{ token: { colorPrimary: '#667eea' } }}>
+      <style>{`
+        .auth-btn:hover {
+          transform: scale(1.03) !important;
+          box-shadow: 0 4px 20px rgba(102, 126, 234, 0.5) !important;
+          transition: all 0.25s ease !important;
+        }
+        .auth-btn {
+          transition: all 0.25s ease !important;
+        }
+
+      `}</style>
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      }}>
+        <Card
+          style={{ width: 480, borderRadius: 12, boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}
+          styles={{ body: { padding: '32px 32px 24px' } }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <Title level={3} style={{ margin: 0, letterSpacing: 4, background: 'linear-gradient(135deg, #667eea, #764ba2)', backgroundClip: 'text', WebkitBackgroundClip: 'text', color: 'transparent' }}>REIMBURSE AGENT</Title>
+            <Text style={{ color: '#667eea' }}>企业财务报销助手</Text>
+          </div>
+          <Tabs
+            activeKey={activeTab}
+            onChange={setActiveTab}
+            centered
+            items={tabItems}
+            style={{ marginBottom: -16 }}
+          />
+        </Card>
+      </div>
+    </ConfigProvider>
   );
 }
