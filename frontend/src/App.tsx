@@ -111,6 +111,12 @@ export default function App() {
         .ant-layout-sider-trigger .anticon {
           transition: transform 0.25s ease !important;
         }
+        .ant-layout-sider-trigger {
+          background: linear-gradient(90deg, #1e3a5f 0%, #2c5a7a 100%) !important;
+        }
+        .ant-layout-sider {
+          border-radius: 0 12px 12px 0 !important;
+        }
       `}</style>
       <Sider
         width={200}
@@ -119,8 +125,8 @@ export default function App() {
         onCollapse={setCollapsed}
         trigger={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
         style={{
-          background: 'linear-gradient(180deg, #001529 0%, #002140 100%)',
-          borderRight: '1px solid rgba(255,255,255,0.06)',
+          background: 'linear-gradient(90deg, #1e3a5f 0%, #2c5a7a 100%)',
+          borderRight: '1px solid rgba(255,255,255,0.08)',
         }}
       >
         <div
