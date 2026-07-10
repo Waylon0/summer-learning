@@ -134,6 +134,56 @@ def category_label(category: str) -> str:
     return CATEGORY_LABELS.get(category, category)
 
 
+# =============================================================================
+# 细粒度分类 → 顶层费用类型 的映射
+# -----------------------------------------------------------------------------
+# 顶层类型（travel/entertainment/office/communication/training/other）用于统计口径、
+# 报销单主类型、费用标准（expense_policy）对齐。一张报销单的 expense_type 由其明细
+# 自动推导（占比最大的类型），避免"差旅单里混入办公明细却仍标 travel"污染报表。
+# =============================================================================
+CATEGORY_TO_EXPENSE_TYPE = {
+    "transport_intercity": "travel",
+    "transport_local": "travel",
+    "accommodation": "travel",
+    "meal": "travel",
+    "other_travel": "travel",
+    "entertainment": "entertainment",
+    "office": "office",
+    "communication": "communication",
+    "training": "training",
+    "other": "other",
+}
+
+# 子类级别覆盖（商务宴请虽属"餐饮"大类，但按招待费口径归类）
+_SUBTYPE_TYPE_OVERRIDE = {
+    "business_meal": "entertainment",
+}
+
+
+def expense_type_for_subtype(subtype_code: str) -> str:
+    """把费用子类映射到顶层费用类型。"""
+    if subtype_code in _SUBTYPE_TYPE_OVERRIDE:
+        return _SUBTYPE_TYPE_OVERRIDE[subtype_code]
+    r = SUBTYPE_RULES.get(subtype_code)
+    if r:
+        return CATEGORY_TO_EXPENSE_TYPE.get(r.category, "other")
+    return "other"
+
+
+def derive_expense_type(items, default: str = "travel") -> str:
+    """依据明细（金额占比最大的顶层类型）推导报销单主费用类型。
+
+    items: 可迭代的 (subtype_code, amount) 二元组。无明细时返回 default。
+    """
+    from collections import defaultdict
+    agg: dict[str, float] = defaultdict(float)
+    for subtype_code, amount in items:
+        agg[expense_type_for_subtype(subtype_code)] += float(amount or 0)
+    if not agg:
+        return default
+    return max(agg.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
 def subtype_label(code: str) -> str:
     r = SUBTYPE_RULES.get(code)
     return r.label if r else code
@@ -207,6 +257,96 @@ def normalize_subtype(text: str) -> str | None:
         if k in t:
             return v
     return None
+
+
+# 按"出差天数"约束数量的子类（餐补按天、住宿按晚）
+_TRIP_BOUND_UNITS = {"meal_allowance": "天", "hotel": "晚"}
+
+# 招待类"人均"上限（元/人），与知识库招待费标准一致
+_PER_PERSON_LIMIT = {"banquet": 200.0, "business_meal": 200.0}
+# 需要登记"招待对象/人数"的子类
+ENTERTAIN_SUBTYPES = frozenset({"banquet", "business_meal"})
+
+
+def per_person_limit(subtype_code: str) -> float:
+    """招待类人均上限（0 表示该子类无人均限制）。"""
+    return float(_PER_PERSON_LIMIT.get(subtype_code, 0.0))
+
+
+def exceeds_per_person_limit(subtype_code: str, amount, attendee_count) -> tuple[bool, float, float]:
+    """判断招待类明细是否超过人均标准。返回 (是否超标, 人均, 上限)。
+
+    未提供人数或该子类无人均限制时不判定超标。
+    """
+    limit = per_person_limit(subtype_code)
+    try:
+        n = int(attendee_count or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if limit <= 0 or n <= 0:
+        return (False, 0.0, limit)
+    per = float(amount or 0) / n
+    return (per > limit + 1e-6, per, limit)
+
+
+def invoice_date_status(invoice_date, ref_date, max_age_days: int = 90) -> str:
+    """发票开票日期相对报销/参考日的状态：ok / future（晚于参考日）/ stale（超期）。
+
+    invoice_date、ref_date 为 datetime.date；任一缺失时返回 ok（不判定）。
+    """
+    if not invoice_date or not ref_date:
+        return "ok"
+    if invoice_date > ref_date:
+        return "future"
+    if (ref_date - invoice_date).days > max_age_days:
+        return "stale"
+    return "ok"
+
+
+def quantity_vs_trip_days(subtype_code: str, quantity, trip_days) -> tuple[bool, str]:
+    """判断按天/按晚计的明细数量是否超过出差天数。
+
+    返回 (是否超出, 单位)。仅对餐补(天)/住宿(晚)生效；trip_days 未知则不判定。
+    """
+    unit = _TRIP_BOUND_UNITS.get(subtype_code, "")
+    if not unit or not trip_days or not quantity:
+        return (False, unit)
+    return (float(quantity) > float(trip_days) + 1e-6, unit)
+
+
+def per_unit_limit(subtype_code: str) -> float:
+    """返回子类的单价/单日/单位上限（0 表示不限）。"""
+    r = SUBTYPE_RULES.get(subtype_code)
+    return float(r.per_unit_limit) if r else 0.0
+
+
+def effective_unit_price(unit_price, amount, quantity) -> float:
+    """推算一条明细的"有效单价"，用于与单位上限比较。
+
+    - 已显式录入单价 → 直接用单价（如 住宿 500/晚、餐补 150/天）。
+    - 未录入单价但数量>1 → 用 金额/数量 反推单价。
+    - 否则视为单笔金额即单价。
+    """
+    up = float(unit_price or 0)
+    if up > 0:
+        return up
+    q = float(quantity or 0)
+    amt = float(amount or 0)
+    if q > 1:
+        return amt / q
+    return amt
+
+
+def exceeds_unit_limit(subtype_code: str, unit_price=0, amount=0, quantity=0) -> tuple[bool, float, float]:
+    """判断某明细是否超过单位上限。
+
+    返回 (是否超标, 有效单价, 上限)。上限为 0（不限）时永不超标。
+    """
+    limit = per_unit_limit(subtype_code)
+    if limit <= 0:
+        return False, effective_unit_price(unit_price, amount, quantity), 0.0
+    eup = effective_unit_price(unit_price, amount, quantity)
+    return (eup > limit + 1e-6), eup, limit
 
 
 def all_subtypes_brief() -> str:

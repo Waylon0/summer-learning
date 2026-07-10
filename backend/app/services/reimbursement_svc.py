@@ -23,12 +23,80 @@ from loguru import logger
 
 from app.models.reimbursement import Reimbursement, Invoice, DepartmentBudget, ApprovalRecord
 from app.schemas.reimbursement import ReimbursementCreate, InvoiceInfo
+from app.core.budget_rules import budget_delta_for_transition
+from app.core.approval_rules import build_approval_chain, can_role_approve_step
 from app.core.exceptions import (
     ReimbursementNotFoundError,
     BudgetNotFoundError,
     BudgetExceededError,
     ComplianceViolationError,
 )
+
+
+async def seed_approval_chain(db: AsyncSession, reimb: Reimbursement) -> list[str]:
+    """为报销单创建整条待审批链：按金额/特殊标记推导层级，每一步落一条
+    action='pending' 的占位审批记录（approver 暂存该步的角色标题）。
+
+    这样前端可展示完整待审批链，审批推进时逐条把最早的 pending 记录置为
+    approve/reject/return，只有全部通过才最终 approved（真正的多级审批）。
+    不在此提交事务，由调用方统一 commit。
+    """
+    chain = build_approval_chain(float(reimb.total_amount or 0), bool(reimb.need_special_approval))
+    special = bool(reimb.need_special_approval)
+    # 支持"退回后重新提交"：新审批链的步骤序号接续既有记录之后，
+    # 既保留历史审批痕迹，又保证本轮 pending 记录为唯一活动链。
+    max_step = (await db.execute(
+        select(func.coalesce(func.max(ApprovalRecord.step), 0))
+        .where(ApprovalRecord.reimbursement_id == reimb.id)
+    )).scalar() or 0
+    for offset, title in enumerate(chain):
+        idx = max_step + offset + 1
+        comment = f"等待{title}审批"
+        if special and offset == len(chain) - 1:
+            comment += "（金额较大/预算超标，需逐级审批）"
+        db.add(ApprovalRecord(
+            reimbursement_id=reimb.id, approver=title, step=idx,
+            action="pending", comment=comment,
+        ))
+    logger.info(f"审批链已生成: reimb={reimb.id} chain={chain} start_step={max_step + 1}")
+    return chain
+
+
+async def adjust_budget_used(db: AsyncSession, department: str, delta: float) -> None:
+    """原子调整部门 used_amount（预留/释放通用）。
+
+    - delta > 0：预留额度；delta < 0：释放额度。
+    - 用数据库端原子自增，避免"读-改-写"并发覆盖导致预算错乱。
+    - 释放后用一条兜底语句把可能出现的负值夹回 0，保证 used_amount 不为负。
+    """
+    if not department or not delta:
+        return
+    await db.execute(
+        text("UPDATE department_budget SET used_amount = used_amount + :d WHERE department = :dept"),
+        {"d": float(delta), "dept": department},
+    )
+    if delta < 0:
+        await db.execute(
+            text("UPDATE department_budget SET used_amount = 0 "
+                 "WHERE department = :dept AND used_amount < 0"),
+            {"dept": department},
+        )
+
+
+async def apply_status_transition_budget(
+    db: AsyncSession, reimb: Reimbursement, new_status: str
+) -> None:
+    """根据报销单状态迁移，联动调整部门预算占用（预留/释放）。
+
+    仅计算并施加增量，不在此提交事务（由调用方统一 commit）。
+    """
+    delta = budget_delta_for_transition(reimb.status, new_status, float(reimb.total_amount or 0))
+    if delta:
+        await adjust_budget_used(db, reimb.department, delta)
+        logger.info(
+            f"预算联动: reimb={reimb.id} dept={reimb.department} "
+            f"{reimb.status}→{new_status} used_amount{'+' if delta > 0 else ''}{delta}"
+        )
 
 
 class ReimbursementService:
@@ -54,9 +122,11 @@ class ReimbursementService:
         # --- 步骤1：计算总额 ---
         total = sum(Decimal(str(i.amount or 0)) for i in invoice_infos)
 
-        # --- 步骤2：查询部门预算 ---
+        # --- 步骤2：查询部门预算（行锁，避免并发读改写超支）---
         budget = await self.db.scalar(
-            select(DepartmentBudget).where(DepartmentBudget.department == data.department)
+            select(DepartmentBudget)
+            .where(DepartmentBudget.department == data.department)
+            .with_for_update()
         )
         if not budget:
             logger.warning(f"预算记录不存在: 部门={data.department}")
@@ -72,8 +142,8 @@ class ReimbursementService:
             )
             # 注意：不抛异常 —— 超标只是标记，不阻止提交
 
-        # --- 步骤4：更新预算已使用金额 ---
-        budget.used_amount += total
+        # --- 步骤4：预留预算（原子自增）---
+        await adjust_budget_used(self.db, data.department, float(total))
 
         # --- 步骤5：创建报销单 ---
         reimb = Reimbursement(
@@ -91,8 +161,23 @@ class ReimbursementService:
         self.db.add(reimb)
         await self.db.flush()
 
-        # --- 步骤6：逐张写入发票 ---
+        # --- 步骤6：逐张写入发票（含发票查重，防重复报销）---
         for info in invoice_infos:
+            number = (info.invoice_number or "").strip()
+            if number:
+                code = (info.invoice_code or "").strip()
+                conds = [Invoice.invoice_number == number]
+                if code:
+                    conds.append(Invoice.invoice_code == code)
+                dup = (await self.db.execute(
+                    select(func.count()).select_from(Invoice).where(*conds)
+                )).scalar() or 0
+                if dup > 0:
+                    from app.core.exceptions import BusinessException
+                    raise BusinessException(
+                        f"发票号码 {number} 已被登记过，禁止重复报销。",
+                        error_code="DUPLICATE_INVOICE",
+                    )
             inv = Invoice(
                 reimbursement_id=reimb.id,
                 invoice_code=info.invoice_code,
@@ -103,7 +188,10 @@ class ReimbursementService:
             )
             self.db.add(inv)
 
-        # --- 步骤7：提交事务 ---
+        # --- 步骤7：生成多级审批链 ---
+        await seed_approval_chain(self.db, reimb)
+
+        # --- 步骤8：提交事务 ---
         await self.db.commit()
         logger.info(
             f"报销单已创建: id={reimb.id} "
@@ -277,15 +365,27 @@ class ApprovalService:
         self.db = db
 
     async def record(
-        self, reimb_id: str, approver: str, action: str, comment: str = None
+        self, reimb_id: str, approver: str, action: str,
+        comment: str = None, approver_role: str = None,
     ) -> ApprovalRecord:
         """
-        记录一条审批操作。
+        记录一条审批操作，驱动【多级审批状态机】。
+
+        规则:
+          - 报销单提交时已按金额生成整条待审批链（若干 pending 占位记录）。
+          - approve：把最早一条 pending 记录置为 approve；仅当【全部层级】都通过，
+            报销单才 approved；否则保持 pending 等待下一级。
+          - reject / return：终止流程（rejected / returned），释放已占用预算，
+            并把后续未处理的 pending 记录标记为 cancelled。
+          - 越权拦截：approver_role 不匹配当前步骤要求的角色则拒绝。
+          - 同一人不得连续审批相邻两级（admin 除外）。
 
         Raises:
           ReimbursementNotFoundError: 报销单不存在
-          BusinessException: 无效的审批动作
+          BusinessException: 动作非法 / 状态非待审批 / 越权 / 连续审批
         """
+        from app.core.exceptions import BusinessException
+
         # --- 步骤1：查出报销单 ---
         reimb = await self.db.get(Reimbursement, reimb_id)
         if not reimb:
@@ -293,38 +393,137 @@ class ApprovalService:
             raise ReimbursementNotFoundError(reimb_id)
 
         # --- 步骤2：校验 action 合法性 ---
-        valid_actions = {"approve", "reject", "return"}
-        if action not in valid_actions:
-            from app.core.exceptions import BusinessException
+        if action not in {"approve", "reject", "return"}:
             raise BusinessException(
-                message=f"无效的审批动作: {action}，有效值: {valid_actions}",
+                message=f"无效的审批动作: {action}，有效值: approve/reject/return",
                 error_code="INVALID_APPROVAL_ACTION",
             )
 
-        # --- 步骤3：计算步骤序号 ---
-        existing = await self.db.execute(
-            select(func.count()).select_from(ApprovalRecord)
+        # --- 步骤3：仅"待审批"状态可操作 ---
+        if reimb.status != "pending":
+            raise BusinessException(
+                message=f"报销单当前状态为「{reimb.status}」，仅待审批状态可审批。",
+                error_code="NOT_PENDING",
+            )
+
+        # --- 步骤4：取出全部审批记录，定位待处理步骤 ---
+        rows = list((await self.db.execute(
+            select(ApprovalRecord)
             .where(ApprovalRecord.reimbursement_id == reimb_id)
-        )
-        step = existing.scalar() + 1
+            .order_by(ApprovalRecord.step.asc())
+        )).scalars().all())
+        pending_rows = [r for r in rows if r.action == "pending"]
+        approved_rows = [r for r in rows if r.action == "approve"]
 
-        # --- 步骤4：写入审批记录 ---
-        record = ApprovalRecord(
-            reimbursement_id=reimb_id,
-            approver=approver,
-            step=step,
-            action=action,
-            comment=comment,
-        )
-        self.db.add(record)
+        # 当前待处理步骤（若历史数据无审批链则回退为单级）
+        current = pending_rows[0] if pending_rows else None
+        step_title = current.approver if current else "部门经理"
 
-        # --- 步骤5：更新报销单状态 ---
-        status_map = {"approve": "approved", "reject": "rejected", "return": "returned"}
-        reimb.status = status_map[action]
+        # --- 步骤5：越权拦截（当调用方提供角色时）---
+        if approver_role is not None and not can_role_approve_step(approver_role, step_title):
+            raise BusinessException(
+                message=f"您的角色（{approver_role}）无权审批「{step_title}」步骤。",
+                error_code="APPROVAL_FORBIDDEN",
+            )
+
+        # --- 步骤6：同一人不得连续审批相邻两级（admin 除外）---
+        if action == "approve" and (approver_role or "").lower() != "admin" \
+                and approved_rows and approved_rows[-1].approver == approver:
+            raise BusinessException(
+                message="同一审批人不能连续审批相邻两个级别，请由其他审批人处理下一级。",
+                error_code="CONSECUTIVE_APPROVAL",
+            )
+
+        now = func.now()
+
+        if action == "approve":
+            if current is not None:
+                current.action = "approve"
+                current.approver = approver
+                current.comment = f"[{step_title}] {comment or '审批通过'}"
+                current.acted_at = now
+                record = current
+            else:
+                # 历史无审批链：补一条通过记录
+                record = ApprovalRecord(
+                    reimbursement_id=reimb_id, approver=approver,
+                    step=len(rows) + 1, action="approve",
+                    comment=comment or "审批通过", acted_at=now,
+                )
+                self.db.add(record)
+            remaining = [r for r in pending_rows if r is not current]
+            new_status = "pending" if remaining else "approved"
+        else:
+            # reject / return：终止本流程
+            if current is not None:
+                current.action = action
+                current.approver = approver
+                current.comment = f"[{step_title}] {comment or ('驳回' if action == 'reject' else '退回修改')}"
+                current.acted_at = now
+                record = current
+            else:
+                record = ApprovalRecord(
+                    reimbursement_id=reimb_id, approver=approver,
+                    step=len(rows) + 1, action=action,
+                    comment=comment or ("驳回" if action == "reject" else "退回修改"),
+                    acted_at=now,
+                )
+                self.db.add(record)
+            # 后续未处理步骤作废
+            for r in pending_rows:
+                if r is not current:
+                    r.action = "cancelled"
+                    r.comment = "流程终止（" + ("已驳回" if action == "reject" else "已退回") + "）"
+            new_status = "rejected" if action == "reject" else "returned"
+
+        # --- 步骤7：状态迁移 + 预算联动（驳回/退回释放已占用额度）---
+        await apply_status_transition_budget(self.db, reimb, new_status)
+        reimb.status = new_status
 
         await self.db.commit()
         logger.info(
-            f"审批完成: reimb={reimb_id} step={step} "
-            f"action={action} approver={approver}"
+            f"审批推进: reimb={reimb_id} step={step_title} "
+            f"action={action} approver={approver} → status={new_status}"
         )
+        return record
+
+    async def mark_paid(
+        self, reimb_id: str, operator: str,
+        operator_role: str = None, comment: str = None,
+    ) -> ApprovalRecord:
+        """出纳付款：已通过(approved) → 已付款(paid)。
+
+        - 权限：仅财务/出纳(finance) 或管理员(admin) 可操作。
+        - 预算：approved→paid 均为占用态，预留额度转为实际支出，不再变动 used_amount。
+
+        Raises:
+          ReimbursementNotFoundError / BusinessException
+        """
+        from app.core.exceptions import BusinessException
+
+        reimb = await self.db.get(Reimbursement, reimb_id)
+        if not reimb:
+            raise ReimbursementNotFoundError(reimb_id)
+        if operator_role is not None and (operator_role or "").lower() not in ("finance", "admin"):
+            raise BusinessException(
+                message="只有财务/出纳可执行付款操作。", error_code="PAYMENT_FORBIDDEN",
+            )
+        if reimb.status != "approved":
+            raise BusinessException(
+                message=f"报销单当前状态为「{reimb.status}」，仅已通过(approved)的报销单可付款。",
+                error_code="NOT_APPROVED",
+            )
+        step = (await self.db.execute(
+            select(func.count()).select_from(ApprovalRecord)
+            .where(ApprovalRecord.reimbursement_id == reimb_id)
+        )).scalar() + 1
+        record = ApprovalRecord(
+            reimbursement_id=reimb_id, approver=operator, step=step,
+            action="pay", comment=comment or "出纳已付款", acted_at=func.now(),
+        )
+        self.db.add(record)
+        await apply_status_transition_budget(self.db, reimb, "paid")
+        reimb.status = "paid"
+        await self.db.commit()
+        logger.info(f"付款完成: reimb={reimb_id} operator={operator} → paid")
         return record

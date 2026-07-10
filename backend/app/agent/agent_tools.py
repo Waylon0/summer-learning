@@ -224,6 +224,11 @@ def _fmt_sheet(reimb) -> dict:
             "quantity": float(it.quantity) if it.quantity is not None else None,
             "unit": it.unit or "",
             "evidence": flag,
+            "remark": it.remark or "",
+            "attendee_count": it.attendee_count,
+            "guest_info": it.guest_info or "",
+            "currency": it.currency or "CNY",
+            "original_amount": float(it.original_amount) if it.original_amount is not None else None,
         })
     subtotals = [{"category": rules.category_label(c), "amount": round(a, 2)} for c, a in cat_subtotal.items()]
     return {
@@ -234,7 +239,9 @@ def _fmt_sheet(reimb) -> dict:
         "trip_days": reimb.trip_days,
         "total_amount": float(reimb.total_amount or 0),
         "invoice_amount": float(reimb.invoice_amount or 0),
+        "invoiced_amount": float(getattr(reimb, "invoiced_amount", 0) or 0),
         "subsidy_amount": float(reimb.subsidy_amount or 0),
+        "tax_amount": float(getattr(reimb, "tax_amount", 0) or 0),
         "item_count": len(items),
         "category_subtotals": subtotals,
         "items": lines,
@@ -249,10 +256,14 @@ async def start_reimbursement_draft(
     trip_start_date: str = "",
     trip_end_date: str = "",
     description: str = "",
+    force_new: bool = False,
 ) -> dict:
     """创建一张【报销单草稿】，作为后续逐条添加费用明细的容器。
     差旅报销请尽量填 trip_destination（目的地）、trip_start_date/trip_end_date（YYYY-MM-DD 出差起止日）。
     一次完整的出差/事项只需创建一张草稿，然后多次调用 add_expense_item 往里加明细。
+
+    防重复：若用户已有一张进行中的草稿，默认【继续使用该草稿】而不是新建，避免重复建单；
+    只有当用户明确要为另一件事新开报销单时，才传 force_new=True 强制新建。
     返回草稿 reimb_id 及当前状态。"""
     from app.core.database import AsyncSessionLocal
     from app.services.expense_sheet_svc import ExpenseSheetService
@@ -262,6 +273,19 @@ async def start_reimbursement_draft(
         return {"success": False, "message": "您尚未登录，无法创建报销单。"}
     async with AsyncSessionLocal() as db:
         svc = ExpenseSheetService(db)
+        # 防重复建单：已有进行中草稿则复用（除非强制新建）
+        if not force_new:
+            existing = await svc.find_active_draft(c["user_id"])
+            if existing is not None:
+                sheet = _fmt_sheet(existing)
+                return {
+                    "success": True, "existing": True, "sheet": sheet,
+                    "message": (
+                        f"检测到您已有一张进行中的报销单草稿（reimb_id={existing.id}，"
+                        f"共{sheet['item_count']}条明细），已为您继续使用。"
+                        "如果这是另一件事项的报销，请说明，我再为您新建。"
+                    ),
+                }
         reimb = await svc.create_draft(
             user_id=c["user_id"], user_name=c.get("user_name", ""),
             department=c.get("user_department", ""),
@@ -270,7 +294,7 @@ async def start_reimbursement_draft(
             trip_end_date=trip_end_date, description=description,
         )
         sheet = _fmt_sheet(reimb)
-    return {"success": True, "sheet": sheet,
+    return {"success": True, "existing": False, "sheet": sheet,
             "message": "已创建报销单草稿，请逐条添加费用明细（交通/住宿/餐饮等）。"}
 
 
@@ -285,6 +309,11 @@ async def add_expense_item(
     occur_date: str = "",
     from_location: str = "",
     to_location: str = "",
+    remark: str = "",
+    attendee_count: int = 0,
+    guest_info: str = "",
+    currency: str = "CNY",
+    exchange_rate: float = 0,
 ) -> dict:
     """向报销单草稿添加一条费用明细。系统会自动判断该笔是否【必须发票】或【按补贴发放】。
 
@@ -301,6 +330,16 @@ async def add_expense_item(
       - 单价×数量：填 unit_price + quantity（如住宿 unit_price=500, quantity=3 表示 3 晚；餐补 unit_price=150, quantity=4 表示 4 天）
       - 直接总额：填 amount（如机票 amount=1200）
     可选 occur_date（YYYY-MM-DD）、from_location/to_location（交通的出发/到达地）。
+
+    超标规则（重要）：住宿(≤500/晚)、餐补(≤150/天)、话费(≤200/月)等有单位上限；
+    若单价超过标准，必须在 remark 里填写"超标说明"（如"会议指定酒店"），否则提交会被拒绝；
+    填了说明也会转为特殊审批。切勿为绕过上限而擅自压低单价。
+
+    招待类（banquet 宴请 / business_meal 商务宴请）：请尽量登记 attendee_count（招待人数）
+    与 guest_info（招待对象/事由）；人均超过 ¥200 需在 remark 填写超标说明，否则提交会被拒绝。
+
+    外币报销：若费用为外币，请传 currency（如 USD/JPY/EUR）与 exchange_rate（1 外币=?人民币），
+    系统会折算为人民币入账；人民币可不填（默认 CNY）。
 
     返回该明细是否需要发票、当前报销单汇总。"""
     from app.core.database import AsyncSessionLocal
@@ -322,6 +361,8 @@ async def add_expense_item(
                 reimb_id, subtype=subtype, amount=amount,
                 unit_price=unit_price, quantity=quantity, description=description,
                 occur_date=occur_date, from_location=from_location, to_location=to_location,
+                remark=remark, attendee_count=attendee_count, guest_info=guest_info,
+                currency=currency, exchange_rate=exchange_rate,
             )
         except BusinessException as e:
             return {"success": False, "message": e.message}
@@ -332,6 +373,54 @@ async def add_expense_item(
     return {"success": True, "item_seq": item.seq,
             "needs_invoice": item.needs_invoice, "is_subsidy": item.is_subsidy,
             "sheet": sheet, "message": tip}
+
+
+@tool
+async def update_expense_item(
+    reimb_id: str,
+    item_seq: int,
+    subtype: str = "",
+    amount: float = 0,
+    unit_price: float = 0,
+    quantity: float = 0,
+    description: str = "",
+    remark: str = "",
+    attendee_count: int = 0,
+    guest_info: str = "",
+    currency: str = "",
+    exchange_rate: float = 0,
+) -> dict:
+    """修改报销单草稿中【已存在】的一条费用明细（按 item_seq 定位），保留其已关联发票。
+    用于纠正金额/子类/说明等，避免"删掉重加"导致丢失已附发票。
+    只需传要修改的字段：传了金额(amount 或 unit_price+quantity)才会重算金额；
+    不传金额则金额不变。返回更新后的报销单汇总。"""
+    from app.core.database import AsyncSessionLocal
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.core.exceptions import BusinessException, ReimbursementNotFoundError
+
+    c = _ctx()
+    async with AsyncSessionLocal() as db:
+        svc = ExpenseSheetService(db)
+        try:
+            reimb0 = await svc.get(reimb_id)
+        except ReimbursementNotFoundError:
+            return {"success": False, "message": f"未找到报销单 {reimb_id}"}
+        if reimb0.user_id != c.get("user_id"):
+            return {"success": False, "message": "只能编辑本人的报销单。"}
+        try:
+            reimb, item = await svc.update_item(
+                reimb_id, item_seq, subtype=subtype, amount=amount,
+                unit_price=unit_price, quantity=quantity,
+                description=description if description else None,
+                remark=remark if remark else None,
+                attendee_count=attendee_count if attendee_count else None,
+                guest_info=guest_info if guest_info else None,
+                currency=currency, exchange_rate=exchange_rate,
+            )
+        except BusinessException as e:
+            return {"success": False, "message": e.message}
+    return {"success": True, "item_seq": item_seq, "sheet": _fmt_sheet(reimb),
+            "message": f"已更新明细#{item_seq}。"}
 
 
 @tool
@@ -364,8 +453,9 @@ async def attach_invoice(
     invoice_date: str = "", seller_name: str = "",
 ) -> dict:
     """为报销单中某条【费用明细行】关联一张发票（用于大额/必须凭票的明细）。
-    item_seq 为明细序号；amount 缺省时用明细金额。若用户已上传发票文件，
-    优先使用 ocr_uploaded_invoices 识别后再关联。"""
+    item_seq 为明细序号；amount 为发票真实金额，【必须提供】且应来自 OCR 识别或发票原件，
+    系统不会用明细金额自动代填（金额铁律）。发票金额合计不得超过该明细金额。
+    若用户已上传发票文件，请先用 ocr_uploaded_invoices 识别，再用识别到的金额调用本工具。"""
     from app.core.database import AsyncSessionLocal
     from app.services.expense_sheet_svc import ExpenseSheetService
     from app.core.exceptions import BusinessException, ReimbursementNotFoundError
@@ -529,7 +619,7 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
             return {"success": False, "message": f"该报销单当前状态为 {reimb.status}，只有待审批的才能审批。"}
         svc = ApprovalService(db)
         try:
-            await svc.record(reimb_id, uname, action, comment or None)
+            await svc.record(reimb_id, uname, action, comment or None, approver_role=role)
         except (ReimbursementNotFoundError, BusinessException) as e:
             return {"success": False, "message": e.message}
         except Exception as e:
@@ -537,6 +627,30 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
             return {"success": False, "message": "审批操作失败，请稍后重试。"}
     cn = {"approve": "已通过", "reject": "已驳回", "return": "已退回"}[action]
     return {"success": True, "reimb_id": reimb_id, "result": cn, "message": f"报销单 {reimb_id} {cn}。"}
+
+
+@tool
+async def pay_reimbursement(reimb_id: str, comment: str = "") -> dict:
+    """出纳付款：把【已通过(approved)】的报销单标记为【已付款(paid)】。
+    权限：仅财务/出纳(finance) 或管理员(admin) 可操作。"""
+    from app.core.database import AsyncSessionLocal
+    from app.services.reimbursement_svc import ApprovalService
+    from app.core.exceptions import ReimbursementNotFoundError, BusinessException
+
+    c = _ctx()
+    uname, role = c.get("user_name", "") or "出纳", c.get("user_role", "")
+    if role not in ("finance", "admin"):
+        return {"success": False, "message": "您没有付款权限，只有财务/出纳可付款。"}
+    async with AsyncSessionLocal() as db:
+        svc = ApprovalService(db)
+        try:
+            await svc.mark_paid(reimb_id, uname, operator_role=role, comment=comment or None)
+        except (ReimbursementNotFoundError, BusinessException) as e:
+            return {"success": False, "message": e.message}
+        except Exception as e:
+            logger.error(f"付款失败: {e}")
+            return {"success": False, "message": "付款操作失败，请稍后重试。"}
+    return {"success": True, "reimb_id": reimb_id, "result": "已付款", "message": f"报销单 {reimb_id} 已付款。"}
 
 
 AGENT_TOOLS = [
@@ -548,10 +662,12 @@ AGENT_TOOLS = [
     ocr_uploaded_invoices,
     start_reimbursement_draft,
     add_expense_item,
+    update_expense_item,
     remove_expense_item,
     attach_invoice,
     view_reimbursement_draft,
     submit_reimbursement,
     generate_reimbursement_pdf_doc,
     approve_reimbursement,
+    pay_reimbursement,
 ]

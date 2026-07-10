@@ -78,6 +78,16 @@ async def _migrate_schema(conn):
         ("reimbursements", "trip_start_date", "DATE"),
         ("reimbursements", "trip_end_date", "DATE"),
         ("reimbursements", "trip_days", "INTEGER"),
+        # reimbursements 表：已开票额 / 可抵扣税额（金额语义细化）
+        ("reimbursements", "invoiced_amount", "NUMERIC(12, 2) DEFAULT 0"),
+        ("reimbursements", "tax_amount", "NUMERIC(12, 2) DEFAULT 0"),
+        # expense_items 表扩展字段（超标说明 / 招待要素 / 外币）
+        ("expense_items", "remark", "TEXT"),
+        ("expense_items", "attendee_count", "INTEGER"),
+        ("expense_items", "guest_info", "VARCHAR(256)"),
+        ("expense_items", "currency", "VARCHAR(8) DEFAULT 'CNY'"),
+        ("expense_items", "exchange_rate", "NUMERIC(12, 6)"),
+        ("expense_items", "original_amount", "NUMERIC(14, 2)"),
     ]
     # 兜底：status 默认值从 pending → draft（新库无所谓，旧库若已有则保留）
     try:

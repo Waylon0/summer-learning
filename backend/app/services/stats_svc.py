@@ -30,8 +30,9 @@ def _to_dt(d: date) -> datetime:
     """
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
-from app.models.reimbursement import Reimbursement, Invoice, DepartmentBudget
+from app.models.reimbursement import Reimbursement, Invoice, DepartmentBudget, ExpenseItem
 from app.models.user import User
+from app.agent import expense_rules as _erules
 from app.schemas.stats import (
     TrendSeries, TrendResponse,
     MonthStat, StatusBreakdown, PersonalStatsResponse,
@@ -51,6 +52,11 @@ _TREND_KNOWN = {"travel", "entertainment", "office"}
 
 # 参与统计的有效状态（排除 rejected / cancelled / returned）
 _ACTIVE_STATUS = ["approved", "pending", "paid"]
+
+
+def _trend_bucket(expense_type: str) -> str:
+    """把顶层费用类型归到折线图的 4 个分桶之一。"""
+    return expense_type if expense_type in _TREND_KNOWN else "other"
 
 
 # =============================================================================
@@ -112,7 +118,13 @@ class StatsService:
 
     # ------------------------------------------------------------------ 趋势
     async def trend(self, months: int = 6, department: str | None = None) -> TrendResponse:
-        """近 N 个月费用趋势，按费用类型分色"""
+        """近 N 个月费用趋势，按【费用明细的类别】分色。
+
+        真实报销单常跨多类费用（差旅单里也可能含办公明细），因此按明细类别
+        （经 expense_rules 映射到顶层类型）分桶，比只看报销单主类型更准确。
+        无明细的历史/兼容报销单，则回退按其报销单主类型计入。
+        """
+        from collections import defaultdict
         months = max(1, min(months, 24))
         month_list = _last_n_months(months)
         first_y, first_m = int(month_list[0][:4]), int(month_list[0][5:7])
@@ -125,28 +137,45 @@ class StatsService:
         if department:
             conditions.append(Reimbursement.department == department)
 
+        # 左连接明细：有明细的按明细类别，无明细的回退按报销单主类型
         rows = (
             await self.db.execute(
                 select(
+                    Reimbursement.id,
                     Reimbursement.created_at,
                     Reimbursement.expense_type,
                     Reimbursement.total_amount,
-                ).where(and_(*conditions))
+                    ExpenseItem.subtype,
+                    ExpenseItem.amount,
+                )
+                .outerjoin(ExpenseItem, ExpenseItem.reimbursement_id == Reimbursement.id)
+                .where(and_(*conditions))
             )
         ).all()
 
-        # 初始化分桶：{expense_type: {month: amount}}
         buckets = {t: {m: 0.0 for m in month_list} for t, _ in STANDARD_TREND_TYPES}
         valid_months = set(month_list)
 
-        for created_at, etype, amount in rows:
+        grouped: dict = defaultdict(list)
+        for rid, created_at, etype, total, subtype, amount in rows:
+            grouped[rid].append((created_at, etype, total, subtype, amount))
+
+        for rid, rrows in grouped.items():
+            created_at, etype, total = rrows[0][0], rrows[0][1], rrows[0][2]
             if not created_at:
                 continue
             m = created_at.strftime("%Y-%m")
             if m not in valid_months:
                 continue
-            bucket = etype if etype in _TREND_KNOWN else "other"
-            buckets[bucket][m] += float(amount or 0)
+            has_items = any(r[3] is not None for r in rrows)
+            if has_items:
+                for _, _, _, subtype, amount in rrows:
+                    if subtype is None:
+                        continue
+                    bucket = _trend_bucket(_erules.expense_type_for_subtype(subtype))
+                    buckets[bucket][m] += float(amount or 0)
+            else:
+                buckets[_trend_bucket(etype or "other")][m] += float(total or 0)
 
         series = [
             TrendSeries(
@@ -156,7 +185,7 @@ class StatsService:
             )
             for t, label in STANDARD_TREND_TYPES
         ]
-        logger.info(f"费用趋势查询: months={months} dept={department} rows={len(rows)}")
+        logger.info(f"费用趋势查询(按明细类别): months={months} dept={department} reimb数={len(grouped)}")
         return TrendResponse(months=month_list, series=series)
 
     # -------------------------------------------------------------- 个人统计

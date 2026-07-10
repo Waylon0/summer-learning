@@ -854,6 +854,101 @@ Authorization: Bearer <token>
 |------|------|------|
 | 员工 | employee | 提交报销、查询自己记录 |
 | 部门经理 | manager | 审批本部门报销、查看部门预算 |
-| 超级管理员 | admin | 管理用户角色、查看全公司数据 |
+| 财务/出纳 | finance | 跨部门审批财务步骤、对已通过单付款、查看全部 |
+| 超级管理员 | admin | 管理用户角色、跨部门审批、查看全公司数据 |
 
-注册用户默认角色为 `employee`，需由超级管理员晋升为 `manager` 或 `admin`。
+注册用户默认角色为 `employee`，需由超级管理员晋升为 `manager` / `finance` / `admin`。
+
+---
+
+## 10. 分步报销 · 多级审批 · 出纳付款（v2.1）
+
+> 本节汇总 v2.1「严谨财务管控」相关的接口与语义变更，完整设计见
+> `docs/DESIGN.md` 与 `docs/OPTIMIZATION_LOG.md`。以下接口均需登录（Bearer Token），
+> 且服务层强制权限收窄（员工仅本人 / 经理本部门 / 财务·管理员全部）。
+
+### 10.1 报销草稿与明细工作流
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/reimbursements/drafts` | 创建报销草稿 |
+| POST | `/api/v1/reimbursements/{id}/items` | 添加费用明细（自动判定需票/补贴、超标拦截、外币折算） |
+| PUT | `/api/v1/reimbursements/{id}/items/{seq}` | **修改明细（保留已关联发票，避免删了重建）** |
+| DELETE | `/api/v1/reimbursements/{id}/items/{seq}` | 删除明细 |
+| POST | `/api/v1/reimbursements/{id}/items/{seq}/invoice` | 为明细关联发票（金额须真实、查重、金额勾稽） |
+| GET | `/api/v1/reimbursements/{id}/validate` | 提交前校验（返回 errors/warnings/missing_invoices/over_limit） |
+| POST | `/api/v1/reimbursements/{id}/submit` | 提交进入多级审批（**支持退回后重新提交**） |
+| POST | `/api/v1/reimbursements/{id}/reopen` | **将"已退回"的报销单重新打开为草稿** |
+
+**添加/修改明细请求体（ExpenseItemCreate）**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| subtype | string | 是 | 费用子类：flight/train/hotel/taxi/meal_allowance/banquet… 也可传中文 |
+| amount | float | 否 | 直接总额（与 unit_price+quantity 二选一） |
+| unit_price / quantity | float | 否 | 单价×数量（如住宿 500×3、餐补 150×4） |
+| description | string | 否 | 说明 |
+| occur_date | string | 否 | 发生日期 YYYY-MM-DD |
+| from_location / to_location | string | 否 | 交通出发/到达地 |
+| remark | string | 否 | **超标说明**（单价/人均超标准时必填，否则提交被拒） |
+| attendee_count | int | 否 | **招待人数**（招待类，用于人均核算 ≤¥200/人） |
+| guest_info | string | 否 | **招待对象/事由**（招待类） |
+| currency | string | 否 | 币种（默认 CNY；外币需配 exchange_rate） |
+| exchange_rate | float | 否 | **汇率**（1 外币=? 人民币） |
+
+**关键校验（提交时硬约束）**
+- 大额/必须凭票项缺发票 → 拒绝，列出缺票明细。
+- 单价/单日超标（住宿≤500/晚、餐补≤150/天、话费≤200/月）：无 `remark` → 拒绝；有说明 → 放行但转特殊审批。
+- 招待人均 >¥200：同上。
+- 餐补天数/住宿晚数 > 出差天数 → 拒绝。
+- 发票金额必须真实（不代填）、全局查重（发票代码+号码）、发票合计不得超过明细金额；
+  必须凭票项发票总额须等于明细金额。
+- 发票日期晚于今天 → 拒绝；超过 `INVOICE_MAX_AGE_DAYS`（默认 90 天）→ 提示。
+
+**报销单金额语义（响应中的汇总字段）**
+
+| 字段 | 含义 |
+|------|------|
+| total_amount | 报销总额（CNY 本位币） |
+| invoice_amount | **应开票额**（需票明细之和） |
+| invoiced_amount | **已开票额**（实际关联发票之和） |
+| subsidy_amount | 补贴额（免票部分） |
+| tax_amount | **可抵扣进项税额合计** |
+
+### 10.2 多级审批
+
+`POST /api/v1/approval`（部门经理 / 财务 / 管理员）
+
+- 提交时按金额自动生成审批链：<¥2,000 部门经理；¥2,000–5,000 +财务主管；
+  ¥5,000–10,000 +财务总监；≥¥10,000 或超标/超预算/整单≥¥50,000 +总经理。
+- `approve` **逐级推进**，全部通过才 `approved`；任一级 `reject`→`rejected`、`return`→`returned`
+  （均**释放已占用预算**，并作废后续未处理步骤）。
+- 拦截：员工无权；经理限本部门；财务/管理员可跨部门；角色须匹配当前步骤；
+  同一人不得连续审批相邻两级；仅 `pending` 可审批。
+
+**错误码补充**
+
+| 状态码 | error_code | 场景 |
+|--------|-----------|------|
+| 400 | `NOT_PENDING` | 报销单非待审批状态 |
+| 400 | `APPROVAL_FORBIDDEN` | 当前角色无权审批该步骤 |
+| 400 | `CONSECUTIVE_APPROVAL` | 同一人连续审批相邻两级 |
+| 400 | `DUPLICATE_INVOICE` | 发票重复报销 |
+| 400 | `INVOICE_AMOUNT_REQUIRED` / `INVOICE_AMOUNT_MISMATCH` | 发票金额缺失/超额 |
+| 400 | `EXCHANGE_RATE_REQUIRED` | 外币缺汇率 |
+
+### 10.3 出纳付款
+
+`POST /api/v1/approval/pay`（仅 finance / admin）
+
+**请求体**
+```json
+{ "reimbursement_id": "xxx", "comment": "已付款" }
+```
+
+- 仅 `approved` 状态可付款，付款后 `status → paid`（预留额度转为实际支出，不再变动预算占用）。
+- 错误码：`PAYMENT_FORBIDDEN`（非财务/出纳）、`NOT_APPROVED`（非已通过状态）。
+
+### 10.4 运维
+
+`uv run reimburse db cleanup-drafts [--days 30]` —— 清理超过 N 天未更新且无明细的空草稿。

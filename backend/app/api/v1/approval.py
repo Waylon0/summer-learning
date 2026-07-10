@@ -13,7 +13,7 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_department_manager
 from app.services.reimbursement_svc import ApprovalService
-from app.schemas.reimbursement import ApprovalAction
+from app.schemas.reimbursement import ApprovalAction, PaymentRequest
 from app.models.user import User
 from app.models.reimbursement import Reimbursement
 
@@ -36,8 +36,8 @@ async def submit_approval(
     """
     logger.info(f"审批请求: user={approver.username}({approver.role}) reimb={action.reimbursement_id} action={action.action}")
 
-    # 管理员可跨部门，经理只能审批本部门
-    if approver.role != "admin":
+    # 管理员/财务可跨部门审批，部门经理只能审批本部门
+    if approver.role == "manager":
         reimb = await db.get(Reimbursement, action.reimbursement_id)
         if not reimb:
             raise HTTPException(status_code=404, detail="报销单不存在")
@@ -53,5 +53,28 @@ async def submit_approval(
         approver.name,
         action.action,
         action.comment,
+        approver_role=approver.role,
     )
+    return record.to_dict()
+
+
+@router.post("/pay")
+async def pay_reimbursement(
+    req: PaymentRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """出纳付款：已通过(approved) → 已付款(paid)。仅财务/出纳或管理员可操作。"""
+    from app.core.exceptions import BusinessException
+    if user.role not in ("finance", "admin"):
+        raise HTTPException(status_code=403, detail="只有财务/出纳可执行付款操作")
+    svc = ApprovalService(db)
+    try:
+        record = await svc.mark_paid(
+            req.reimbursement_id, user.name,
+            operator_role=user.role, comment=req.comment,
+        )
+    except BusinessException as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    logger.info(f"付款请求: user={user.username} reimb={req.reimbursement_id}")
     return record.to_dict()

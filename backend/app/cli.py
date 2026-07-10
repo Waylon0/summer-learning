@@ -150,9 +150,15 @@ def db_init():
     print("   [2/3] 导入种子数据...")
     r2 = _sh(["uv", "run", "python", "seed.py"], cwd=BACKEND_DIR)
     if r2.returncode != 0:
-        # 种子数据失败通常是数据库连不上
-        print("   ⚠️  种子数据导入失败 — 数据库可能未就绪")
-        print(f"   {r2.stderr[-300:] if r2.stderr else '(无错误详情)'}")
+        err = (r2.stderr or "") + (r2.stdout or "")
+        # 区分"依赖缺失"与"数据库未就绪"两类常见失败，避免误导排查方向
+        if "ModuleNotFoundError" in err or "No module named" in err:
+            print("   ❌ 种子数据导入失败 — 依赖未安装齐全（并非数据库问题）")
+            print("      虚拟环境与 uv.lock 不同步，请先执行：  uv sync")
+            print("      若仍缺失，可直接安装：              uv pip install python-dotenv")
+        else:
+            print("   ⚠️  种子数据导入失败 — 数据库可能未就绪")
+        print(f"   详情: {err[-400:] if err else '(无错误详情)'}")
 
     print("   [3/3] ✅ 数据库初始化完成")
 
@@ -214,6 +220,22 @@ def cmd_data(args):
 
 
 def cmd_db(args):
+    action = getattr(args, "action", "init") or "init"
+    if action == "cleanup-drafts":
+        import asyncio
+        from app.core.database import AsyncSessionLocal
+        from app.services.expense_sheet_svc import ExpenseSheetService
+
+        days = getattr(args, "days", 30)
+
+        async def _run():
+            async with AsyncSessionLocal() as db:
+                svc = ExpenseSheetService(db)
+                return await svc.cleanup_stale_drafts(days=days)
+
+        removed = asyncio.run(_run())
+        print(f"✅ 已清理 {removed} 条过期空草稿（阈值 {days} 天）")
+        return
     db_init()
 
 
@@ -255,7 +277,8 @@ def main():
     p_data.set_defaults(func=cmd_data)
 
     p_db = sub.add_parser("db", help="数据库管理")
-    p_db.add_argument("action", choices=["init"], default="init", nargs="?")
+    p_db.add_argument("action", choices=["init", "cleanup-drafts"], default="init", nargs="?")
+    p_db.add_argument("--days", type=int, default=30, help="清理多少天前的空草稿（cleanup-drafts 用）")
     p_db.set_defaults(func=cmd_db)
 
     p_kb = sub.add_parser("kb", help="知识库管理")

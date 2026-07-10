@@ -123,6 +123,11 @@ class ExpenseItemCreate(BaseModel):
     occur_date: Optional[str] = None
     from_location: str = ""
     to_location: str = ""
+    remark: str = ""                               # 超标说明（单价超标准时必填）
+    attendee_count: int = 0                        # 招待人数（招待类）
+    guest_info: str = ""                           # 招待对象/事由（招待类）
+    currency: str = "CNY"                          # 币种（外币需提供 exchange_rate）
+    exchange_rate: float = 0                        # 汇率（1 外币 = ? 人民币）
 
 
 class ItemInvoiceCreate(BaseModel):
@@ -192,6 +197,12 @@ class ApprovalAction(BaseModel):
     approver: str                                                     # 审批人
     action: str = Field(..., description="approve / reject / return")  # 动作
     comment: Optional[str] = None                                     # 审批意见
+
+
+class PaymentRequest(BaseModel):
+    """出纳付款请求（approved → paid）"""
+    reimbursement_id: str
+    comment: Optional[str] = None
 
 
 # =============================================================================

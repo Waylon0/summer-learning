@@ -37,7 +37,7 @@ STATUS_CN = {
     "rejected": "已驳回", "returned": "已退回", "paid": "已付款", "cancelled": "已撤销",
 }
 ACTION_CN = {"approve": "通过", "reject": "驳回", "return": "退回",
-             "pending": "待审批", "cancelled": "已撤销"}
+             "pending": "待审批", "cancelled": "已撤销", "pay": "已付款"}
 
 
 def _register_font():

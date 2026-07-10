@@ -46,8 +46,10 @@ class Reimbursement(Base):
     total_amount: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False, default=0  # Decimal=精确小数，12位总长，2位小数（明细汇总）
     )
-    invoice_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)     # 需发票部分合计
+    invoice_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)     # 需发票部分合计（应开票额）
+    invoiced_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)    # 已实际关联发票金额合计（已开票额）
     subsidy_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)     # 补贴部分合计（无需发票）
+    tax_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)         # 可抵扣进项税额合计
     description: Mapped[str] = mapped_column(Text, nullable=True)                  # 报销说明（可空）
     invoice_count: Mapped[int] = mapped_column(Integer, default=0)                 # 发票张数
 
@@ -103,7 +105,9 @@ class Reimbursement(Base):
             "title": self.title or "",
             "total_amount": float(self.total_amount or 0),   # Decimal → float 才能 JSON 序列化
             "invoice_amount": float(self.invoice_amount or 0),
+            "invoiced_amount": float(self.invoiced_amount or 0),
             "subsidy_amount": float(self.subsidy_amount or 0),
+            "tax_amount": float(self.tax_amount or 0),
             "description": self.description,
             "invoice_count": self.invoice_count,
             "trip_destination": self.trip_destination or "",
@@ -146,11 +150,16 @@ class ExpenseItem(Base):
     subtype: Mapped[str] = mapped_column(String(32), nullable=False)             # 费用子类 flight/train/hotel...
     description: Mapped[str] = mapped_column(String(256), nullable=True)         # 明细说明（如"去程 北京→上海"）
 
-    # 金额构成：unit_price × quantity = amount
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True)   # 单价（如 500 元/晚）
+    # 金额构成：unit_price × quantity = amount（均以人民币 CNY 为本位币）
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True)   # 单价（如 500 元/晚，CNY）
     quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True, default=1)  # 数量（如 3 晚 / 4 天）
     unit: Mapped[str] = mapped_column(String(16), nullable=True)                 # 单位（晚/天/次/程）
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)  # 小计
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)  # 小计（CNY 本位币）
+
+    # 外币支持（本位币为 CNY；amount 恒为折算后的人民币金额）
+    currency: Mapped[str] = mapped_column(String(8), nullable=True, default="CNY")  # 原始币种
+    exchange_rate: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=True)   # 汇率（1 外币 = ? CNY）
+    original_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=True) # 原币金额（外币时）
 
     # 单据形式
     evidence_type: Mapped[str] = mapped_column(String(16), default="required")   # required/subsidy/conditional
@@ -162,6 +171,11 @@ class ExpenseItem(Base):
     occur_date: Mapped[date] = mapped_column(Date, nullable=True)                # 发生日期
     from_location: Mapped[str] = mapped_column(String(64), nullable=True)       # 出发地（交通）
     to_location: Mapped[str] = mapped_column(String(64), nullable=True)         # 到达地（交通）
+
+    # 超标说明 / 招待要素等补充信息
+    remark: Mapped[str] = mapped_column(Text, nullable=True)                     # 超标说明（超标准明细必填）
+    attendee_count: Mapped[int] = mapped_column(Integer, nullable=True)          # 招待人数（招待类）
+    guest_info: Mapped[str] = mapped_column(String(256), nullable=True)          # 招待对象/事由（招待类）
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -182,6 +196,9 @@ class ExpenseItem(Base):
             "quantity": float(self.quantity) if self.quantity is not None else None,
             "unit": self.unit or "",
             "amount": float(self.amount or 0),
+            "currency": self.currency or "CNY",
+            "exchange_rate": float(self.exchange_rate) if self.exchange_rate is not None else None,
+            "original_amount": float(self.original_amount) if self.original_amount is not None else None,
             "evidence_type": self.evidence_type,
             "is_subsidy": self.is_subsidy,
             "needs_invoice": self.needs_invoice,
@@ -189,6 +206,9 @@ class ExpenseItem(Base):
             "occur_date": self.occur_date.isoformat() if self.occur_date else None,
             "from_location": self.from_location or "",
             "to_location": self.to_location or "",
+            "remark": self.remark or "",
+            "attendee_count": self.attendee_count,
+            "guest_info": self.guest_info or "",
             "invoices": [inv.to_dict() for inv in (self.invoices or [])],
         }
 

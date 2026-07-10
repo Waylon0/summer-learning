@@ -142,5 +142,6 @@ ReimburseAgent/
 │       ├── stores/                 # Zustand 状态管理
 │       └── types/                  # TypeScript 类型
 └── docs/
-    └── ARCHITECTURE.md         # 详细架构文档
+    ├── DESIGN.md               # 需求分析与架构设计文档（合并版）
+    └── API.md                  # REST API 详细说明
 ```

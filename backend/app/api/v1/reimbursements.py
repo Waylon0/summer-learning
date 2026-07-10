@@ -125,12 +125,21 @@ async def cancel_reimbursement(
         cn = readable_status.get(reimb.status, reimb.status)
         raise HTTPException(status_code=400, detail=f"报销单状态为「{cn}」，只有「待审批」状态才能撤销")
 
-    # 执行撤销
+    # 执行撤销（同时释放已占用的部门预算）
     async with engine.begin() as conn:
         await conn.execute(text("UPDATE reimbursements SET status = 'cancelled' WHERE id = :rid"), {"rid": reimb_id})
         await conn.execute(text("UPDATE approval_records SET action = 'cancelled', comment = '申请人主动撤销' WHERE reimbursement_id = :rid"), {"rid": reimb_id})
+        # 报销单原为 pending（占用预算），撤销后释放该笔额度，避免预算泄漏
+        await conn.execute(
+            text("UPDATE department_budget SET used_amount = used_amount - :amt WHERE department = :dept"),
+            {"amt": float(reimb.total_amount or 0), "dept": reimb.department},
+        )
+        await conn.execute(
+            text("UPDATE department_budget SET used_amount = 0 WHERE department = :dept AND used_amount < 0"),
+            {"dept": reimb.department},
+        )
 
-    logger.info(f"报销单撤销: {reimb_id} by {user.username}")
+    logger.info(f"报销单撤销: {reimb_id} by {user.username}，释放预算 ¥{float(reimb.total_amount or 0):,.2f}")
     return {"reimb_id": reimb_id, "status": "cancelled", "message": "报销单已撤销"}
 
 
@@ -230,6 +239,36 @@ async def add_item(
             unit_price=data.unit_price, quantity=data.quantity,
             description=data.description, occur_date=data.occur_date or "",
             from_location=data.from_location, to_location=data.to_location,
+            remark=data.remark,
+            attendee_count=data.attendee_count, guest_info=data.guest_info,
+            currency=data.currency, exchange_rate=data.exchange_rate,
+        )
+    except BusinessException as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return {"item": item.to_dict(), "reimbursement": reimb.to_dict(with_items=True)}
+
+
+@router.put("/{reimb_id}/items/{item_seq}")
+async def update_item(
+    reimb_id: str, item_seq: int,
+    data: ExpenseItemCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """修改草稿中的一条费用明细（保留已关联发票，避免删了重建丢发票）。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.core.exceptions import BusinessException
+    svc = ExpenseSheetService(db)
+    await _load_owned_draft(svc, reimb_id, user)
+    try:
+        reimb, item = await svc.update_item(
+            reimb_id, item_seq, subtype=data.subtype, amount=data.amount,
+            unit_price=data.unit_price, quantity=data.quantity,
+            description=data.description, occur_date=data.occur_date or "",
+            from_location=data.from_location, to_location=data.to_location,
+            remark=data.remark, attendee_count=data.attendee_count,
+            guest_info=data.guest_info,
+            currency=data.currency, exchange_rate=data.exchange_rate,
         )
     except BusinessException as e:
         raise HTTPException(status_code=400, detail=e.message)
@@ -291,7 +330,7 @@ async def submit_draft(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """提交草稿进入审批（严格校验 + 预算检查）。"""
+    """提交草稿进入审批（严格校验 + 预算检查）。支持"已退回"报销单重新提交。"""
     from app.services.expense_sheet_svc import ExpenseSheetService
     svc = ExpenseSheetService(db)
     await _load_owned_draft(svc, reimb_id, user)
@@ -300,6 +339,24 @@ async def submit_draft(
         # 校验失败返回 400 + 详情
         raise HTTPException(status_code=400, detail=result.get("message", "提交失败"))
     return result
+
+
+@router.post("/{reimb_id}/reopen")
+async def reopen_returned(
+    reimb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把"已退回"的报销单重新打开为草稿，便于修改后重新提交。"""
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.core.exceptions import BusinessException
+    svc = ExpenseSheetService(db)
+    await _load_owned_draft(svc, reimb_id, user)
+    try:
+        reimb = await svc.reopen(reimb_id)
+    except BusinessException as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return reimb.to_dict(with_items=True)
 
 
 def _to_response(reimb) -> ReimbursementResponse:

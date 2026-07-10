@@ -84,6 +84,7 @@ def _tool_label(name: str) -> str:
         "submit_reimbursement": "提交报销申请",
         "generate_reimbursement_pdf_doc": "生成报销单PDF",
         "approve_reimbursement": "审批报销单",
+        "pay_reimbursement": "出纳付款",
     }.get(name, name)
 
 
