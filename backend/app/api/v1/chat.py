@@ -88,6 +88,21 @@ def _tool_label(name: str) -> str:
     }.get(name, name)
 
 
+def _extract_reimb_id_from_reasoning(reasoning: list[dict]) -> str | None:
+    """从思考链工具结果中提取报销单 ID。"""
+    for r in reasoning:
+        if r.get("tool") == "save_reimbursement_to_db" and r.get("type") == "tool_result":
+            out = r.get("output", "")
+            try:
+                if isinstance(out, str):
+                    out = json.loads(out)
+                if isinstance(out, dict) and "reimb_id" in out:
+                    return out["reimb_id"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return None
+
+
 # =============================================================================
 # 非流式对话
 # =============================================================================
@@ -200,9 +215,13 @@ async def _chat_stream(request: ChatRequest, user: User):
 
             await _persist_turn(conversation_id, request.message, reply, reasoning=reasoning or None)
 
+            # 从工具调用结果中提取报销单 ID（供前端"发送邮件"按钮使用）
+            reimb_id = _extract_reimb_id_from_reasoning(reasoning)
+
             yield _sse_event("done", {
                 "session_id": conversation_id,
                 "elapsed_ms": round((time.perf_counter() - t_start) * 1000),
+                "reimb_id": reimb_id,
             })
         except Exception as e:
             import traceback

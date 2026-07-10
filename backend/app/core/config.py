@@ -74,6 +74,7 @@ class Settings(BaseModel):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "noreply@company.com"
+    APPROVER_EMAIL: str = "approver@company.com"
 
     # ===================== 存储配置 =====================
     STORAGE_BACKEND: str = "local"

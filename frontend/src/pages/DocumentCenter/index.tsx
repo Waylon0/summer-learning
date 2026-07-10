@@ -74,12 +74,12 @@ export default function DocumentCenter() {
       const res = await sendReimbEmail(selected.id);
       if (res.sent) {
         setEmailSent(true);
-        message.success('邮件已发送');
+        message.success(res.message || '邮件已发送');
       } else {
-        message.warning(res.message || '邮件发送失败');
+        message.warning(res.message || '邮件发送失败，请检查 SMTP 配置');
       }
     } catch {
-      message.info('邮件发送接口暂未就绪，请联系后端开发');
+      message.error('邮件发送失败，请稍后重试');
     }
     setEmailSending(false);
   };
