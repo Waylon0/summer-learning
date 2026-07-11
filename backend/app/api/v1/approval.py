@@ -55,6 +55,11 @@ async def submit_approval(
         action.comment,
         approver_role=approver.role,
     )
+    # budget transition already applied by ApprovalService.record internally;
+    # for approve, delta=0 (budget stays reserved from submit).
+    # reject/return would release budget (delta<0).
+    # No additional apply_status_transition_budget call needed here.
+
     # 审批完成后重新生成 PDF（反映最新审批记录），失败不阻断
     pdf_url = ""
     try:

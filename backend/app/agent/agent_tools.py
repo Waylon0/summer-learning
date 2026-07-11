@@ -840,6 +840,7 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
             return {"success": False, "message": f"只能审批本部门（{dept}）的报销单。"}
         if reimb.status != "pending":
             return {"success": False, "message": f"该报销单当前状态为 {reimb.status}，只有待审批的才能审批。"}
+        reimb_department = reimb.department  # 记下部门，审批后查询同步预算用
         svc = ApprovalService(db)
         try:
             await svc.record(reimb_id, uname, action, comment or None, approver_role=role)
@@ -853,7 +854,7 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
         new_status = reimb.status
 
     cn = {"approve": "已通过", "reject": "已驳回", "return": "已退回"}[action]
-    extra = ""; pdf_url = ""
+    extra = ""; pdf_url = ""; budget_info = {}
     # 审批完成后重新生成 PDF（反映最新审批记录与状态），失败不阻断
     try:
         from app.services.pdf_svc import generate_and_store_reimbursement_pdf
@@ -865,6 +866,14 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
             pdf_url = info.get("download_url", "")
     except Exception as e:
         logger.warning(f"审批后重新生成 PDF 失败（不阻断）: {e}")
+
+    # 查询审批后当前部门预算，确保 agent 能给出与 Dashboard 同步的预算数
+    dept_name = reimb_department  # captured before the session block
+    try:
+        from app.agent.tools.reimburse_tools import budget_check
+        budget_info = await budget_check(department=dept_name, amount=0)
+    except Exception as e:
+        logger.warning(f"查询审批后预算失败（不阻断）: {e}")
 
     # 一审（部门经理）通过后仍是 pending → 进入二审，同步邮件通知财务（附 PDF、抄送管理员）。
     if action == "approve" and new_status == "pending":
@@ -886,6 +895,7 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
         extra += f" 已更新报销单 PDF：{pdf_url}（请原样展示给用户）。"
     return {"success": True, "reimb_id": reimb_id, "result": cn,
             "new_status": new_status, "pdf_download_url": pdf_url,
+            "budget_info": budget_info,
             "message": f"报销单 {reimb_id} {cn}。{extra}"}
 
 
