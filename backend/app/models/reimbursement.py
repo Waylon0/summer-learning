@@ -280,6 +280,12 @@ class DepartmentBudget(Base):
     annual_budget: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)  # 年度预算总额
     used_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)         # 已使用金额
     fiscal_year: Mapped[int] = mapped_column(Integer, nullable=False)               # 财政年度
+    # --- 预算管理模块（阶段一）新增：状态 / 备注 / 更新时间 ---
+    status: Mapped[str] = mapped_column(String(16), default="active")               # active / frozen（冻结后拒绝新占用，预留）
+    note: Mapped[str] = mapped_column(String(256), nullable=True)                   # 备注（如"Q3 追加"）
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()     # 最近调整时间
+    )
 
     def to_dict(self):
         return {
@@ -290,6 +296,9 @@ class DepartmentBudget(Base):
             "remaining": float(self.annual_budget - self.used_amount),  # 剩余 = 年度总额 - 已用
             "fiscal_year": self.fiscal_year,
             "usage_rate": float(self.used_amount / self.annual_budget * 100) if self.annual_budget > 0 else 0,
+            "status": self.status or "active",
+            "note": self.note or "",
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
@@ -376,4 +385,47 @@ class ExpensePolicy(Base):
             "max_per_item": float(self.max_per_item) if self.max_per_item else None,
             "max_per_request": float(self.max_per_request) if self.max_per_request else None,
             "description": self.description,
+        }
+
+
+# =============================================================================
+# 表6：部门预算变更流水 / 审计表（预算管理模块 · 阶段一）
+# =============================================================================
+class BudgetAdjustment(Base):
+    """
+    部门预算的每一次【人工管理操作】留痕，供财务审计与追溯。
+
+    由预算管理接口（新建/调额度/冲正/部门调拨）写入，与报销状态机自动增减的
+    used_amount 分开记录：本表只记录“人为”变更，报销占用/释放不在此登记。
+    """
+    __tablename__ = "budget_adjustment"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    department: Mapped[str] = mapped_column(String(64), nullable=False, index=True)   # 部门
+    fiscal_year: Mapped[int] = mapped_column(Integer, nullable=True)                  # 财年（记录用）
+    # 变更类型：create/increase/decrease/transfer_in/transfer_out/correction
+    change_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    delta_annual: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)          # 年度额度变化量(+/-)
+    delta_used: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)            # used_amount 冲正变化量(+/-)
+    before_annual: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=True)     # 变更前年度额度快照
+    after_annual: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=True)      # 变更后年度额度快照
+    operator: Mapped[str] = mapped_column(String(64), nullable=False)                 # 操作人姓名
+    operator_role: Mapped[str] = mapped_column(String(16), nullable=True)            # 操作人角色 admin/finance
+    reason: Mapped[str] = mapped_column(Text, nullable=True)                          # 调整原因（审计留痕）
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "department": self.department,
+            "fiscal_year": self.fiscal_year,
+            "change_type": self.change_type,
+            "delta_annual": float(self.delta_annual or 0),
+            "delta_used": float(self.delta_used or 0),
+            "before_annual": float(self.before_annual) if self.before_annual is not None else None,
+            "after_annual": float(self.after_annual) if self.after_annual is not None else None,
+            "operator": self.operator,
+            "operator_role": self.operator_role or "",
+            "reason": self.reason or "",
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }

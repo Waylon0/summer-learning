@@ -11,10 +11,11 @@
 3. [Agent 对话](#2-agent-对话)
 4. [报销单 CRUD](#3-报销单-crud)
 5. [部门预算](#4-部门预算)
-6. [文件上传](#5-文件上传)
-7. [审批操作](#6-审批操作)
-8. [费用统计](#7-费用统计)
-9. [发票台账](#8-发票台账)
+6. [部门预算管理（写操作）](#4b-部门预算管理写操作--需-adminfinance)
+7. [文件上传](#5-文件上传)
+8. [审批操作](#6-审批操作)
+9. [费用统计](#7-费用统计)
+10. [发票台账](#8-发票台账)
 
 ---
 
@@ -443,6 +444,9 @@ GET http://localhost:8000/api/v1/budget
 | remaining | float | 剩余金额（annual_budget - used_amount） |
 | fiscal_year | int | 财政年度 |
 | usage_rate | float | 使用率（百分比，如 40.0 表示已使用 40%） |
+| status | string | 预算状态：active（正常）/ frozen（冻结，预留字段） |
+| note | string | 备注（如"Q3 追加"） |
+| updated_at | string\|null | 最近调整时间（ISO8601） |
 
 ---
 
@@ -480,6 +484,197 @@ GET http://localhost:8000/api/v1/budget/技术部
 | 状态码 | error_code | 场景 |
 |--------|-----------|------|
 | 404 | `NOT_FOUND` | 部门预算不存在（如 "销售部"） |
+
+---
+
+## 4b. 部门预算管理（写操作 · 需 admin/finance）
+
+> 预算管理模块（阶段一）。写操作权限为 **admin 或 finance**；每次人工变更都会写入
+> 一条审计流水（`budget_adjustment`）。所有写操作在事务内对预算行加锁（`SELECT ... FOR UPDATE`），
+> 与报销状态机的预算预留/释放共用同一套原子增减逻辑，天然防并发超支。
+>
+> 说明：本期**不做**多财年并存与跨财年结转；`fiscal_year` 仅作记录展示。
+
+### POST /api/v1/budget
+
+新建部门预算。
+
+**权限**：admin / finance
+
+**请求体**
+```json
+{ "department": "新部门", "annual_budget": 200000, "fiscal_year": 2026, "note": "新设部门预算" }
+```
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| department | string | 是 | 部门名称（唯一，已存在则 400） |
+| annual_budget | float | 是 | 年度预算总额，必须 > 0 |
+| fiscal_year | int | 是 | 财政年度 |
+| note | string | 否 | 备注 |
+
+**成功响应** `201`
+```json
+{
+  "budget": { "id": "…", "department": "新部门", "annual_budget": 200000.0,
+    "used_amount": 0.0, "remaining": 200000.0, "fiscal_year": 2026,
+    "usage_rate": 0.0, "status": "active", "note": "新设部门预算", "updated_at": "…" },
+  "adjustment": { "id": "…", "department": "新部门", "change_type": "create",
+    "delta_annual": 200000.0, "before_annual": 0.0, "after_annual": 200000.0,
+    "operator": "系统管理员", "operator_role": "admin", "reason": "新设部门预算", "created_at": "…" }
+}
+```
+
+**错误响应**
+
+| 状态码 | error_code | 场景 |
+|--------|-----------|------|
+| 400 | `BUDGET_ALREADY_EXISTS` | 部门预算已存在 |
+| 400 | `INVALID_BUDGET_AMOUNT` | 年度额度 ≤ 0 |
+| 403 | — | 非 admin/finance |
+
+---
+
+### PATCH /api/v1/budget/{department}
+
+调整部门年度额度（增/减，或绝对改写）。
+
+**权限**：admin / finance
+
+**请求体**（`delta` 与 `new_annual_budget` 二选一；都传时以 `new_annual_budget` 为准）
+```json
+{ "delta": 100000, "reason": "Q3 追加差旅预算" }
+```
+或
+```json
+{ "new_annual_budget": 700000, "reason": "年中预算重定", "force": false }
+```
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| delta | float | 二选一 | 额度增量（+追加/−削减） |
+| new_annual_budget | float | 二选一 | 改写为绝对值（>0） |
+| reason | string | 是 | 调整原因（审计留痕） |
+| force | bool | 否 | 调减后低于已用额时需传 true 确认 |
+
+**成功响应** `200`：`{ "budget": {...}, "adjustment": {...} }`（结构同上，`change_type` 为 `increase`/`decrease`）
+
+**错误响应**
+
+| 状态码 | error_code | 场景 |
+|--------|-----------|------|
+| 400 | `INVALID_ADJUST_INPUT` | delta 与 new_annual_budget 都未提供 |
+| 400 | `INVALID_ANNUAL_CHANGE` | 额度≤0，或调减后低于已用额且未传 force |
+| 400 | `NO_CHANGE` | 调整后与当前额度相同 |
+| 404 | `NOT_FOUND` | 部门预算不存在 |
+| 422 | — | 缺少 reason 等必填校验 |
+
+---
+
+### POST /api/v1/budget/{department}/correction
+
+人工冲正 `used_amount`（应对手工修账）。冲正后不为负（自动夹 0）。
+
+**权限**：admin / finance
+
+**请求体**
+```json
+{ "delta_used": -50000, "reason": "手工修正误占用" }
+```
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| delta_used | float | 是 | used_amount 冲正增量（+/-，不可为 0） |
+| reason | string | 是 | 冲正原因（审计留痕） |
+
+**成功响应** `200`：`{ "budget": {...}, "adjustment": {...} }`（`change_type` 为 `correction`，`delta_used` 为实际生效冲正量）
+
+**错误响应**
+
+| 状态码 | error_code | 场景 |
+|--------|-----------|------|
+| 400 | `INVALID_CORRECTION` | 冲正金额为 0 |
+| 404 | `NOT_FOUND` | 部门预算不存在 |
+
+---
+
+### POST /api/v1/budget/transfer
+
+部门间额度调拨：`from_dept` 转出 `amount` 到 `to_dept`（一增一减，同一事务，成对审计）。
+
+**权限**：admin / finance
+
+**请求体**
+```json
+{ "from_dept": "市场部", "to_dept": "技术部", "amount": 50000, "reason": "项目资源腾挪", "force": false }
+```
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| from_dept | string | 是 | 转出部门 |
+| to_dept | string | 是 | 转入部门 |
+| amount | float | 是 | 调拨金额，必须 > 0 |
+| reason | string | 是 | 调拨原因（审计留痕） |
+| force | bool | 否 | 转出后转出方额度低于其已用额时需 true 确认 |
+
+**成功响应** `200`
+```json
+{
+  "from_budget": { "department": "市场部", "annual_budget": 250000.0, ... },
+  "to_budget":   { "department": "技术部", "annual_budget": 650000.0, ... },
+  "adjustments": [
+    { "department": "市场部", "change_type": "transfer_out", "delta_annual": -50000.0, ... },
+    { "department": "技术部", "change_type": "transfer_in",  "delta_annual":  50000.0, ... }
+  ]
+}
+```
+
+**错误响应**
+
+| 状态码 | error_code | 场景 |
+|--------|-----------|------|
+| 400 | `INVALID_TRANSFER_AMOUNT` | 金额 ≤ 0 |
+| 400 | `INVALID_TRANSFER_SAME_DEPT` | 转出/转入部门相同 |
+| 400 | `INVALID_TRANSFER` | 转出后额度低于已用额（未 force）或为负 |
+| 404 | `NOT_FOUND` | 转出/转入部门预算不存在 |
+
+---
+
+### GET /api/v1/budget/{department}/adjustments
+
+查看某部门预算变更流水（审计）。
+
+**权限**：admin / finance
+
+**查询参数**：`limit`（默认 50，最大 200）
+
+**成功响应** `200`
+```json
+[
+  { "id": "…", "department": "技术部", "fiscal_year": 2026, "change_type": "increase",
+    "delta_annual": 100000.0, "delta_used": 0.0, "before_annual": 600000.0, "after_annual": 700000.0,
+    "operator": "系统管理员", "operator_role": "admin", "reason": "Q3 追加", "created_at": "…" }
+]
+```
+
+---
+
+### GET /api/v1/budget/{department}/consumption
+
+预算消耗下钻：列出占用该部门预算（待审批/已通过/已付款）的报销单及占用总额。
+
+**权限**：admin / finance 任意部门；manager 仅本部门；employee 拒绝（403）。
+
+**查询参数**：`limit`（默认 50，最大 200）
+
+**成功响应** `200`
+```json
+{
+  "department": "技术部",
+  "committed_total": 4000.0,
+  "count": 2,
+  "reimbursements": [
+    { "id": "…", "user_name": "张三", "expense_type": "travel", "title": "北京出差",
+      "total_amount": 3200.0, "status": "pending", "created_at": "…" }
+  ]
+}
+```
 
 ---
 

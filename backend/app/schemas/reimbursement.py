@@ -196,6 +196,62 @@ class BudgetResponse(BaseModel):
     remaining: float                                                  # 剩余
     fiscal_year: int                                                  # 财政年度
     usage_rate: float                                                 # 使用率（百分比）
+    status: Optional[str] = "active"                                  # active / frozen
+    note: Optional[str] = ""                                          # 备注
+    updated_at: Optional[str] = None                                  # 最近调整时间
+
+
+# =============================================================================
+# 5b. 预算管理（阶段一：建/调/冲正/调拨 + 审计）—— 写操作 admin/finance
+# =============================================================================
+class BudgetCreateRequest(BaseModel):
+    """新建部门预算"""
+    department: str = Field(..., description="部门名称（唯一）")
+    annual_budget: float = Field(..., gt=0, description="年度预算总额，必须 > 0")
+    fiscal_year: int = Field(..., description="财政年度，如 2026")
+    note: Optional[str] = None
+
+
+class BudgetAdjustRequest(BaseModel):
+    """调整部门年度额度（二选一）：
+      - delta：增量（+ 追加 / − 削减）；
+      - new_annual_budget：直接改写为绝对值。
+    两者都传时以 new_annual_budget 为准。调减后不得低于已用额，除非 force=True。"""
+    delta: Optional[float] = Field(None, description="额度增量(+/-)")
+    new_annual_budget: Optional[float] = Field(None, gt=0, description="改写后的年度额度(绝对值)")
+    reason: str = Field(..., min_length=1, description="调整原因（必填，审计留痕）")
+    force: bool = Field(False, description="调减到低于已用额时需显式 True 确认")
+
+
+class BudgetCorrectionRequest(BaseModel):
+    """人工冲正 used_amount（应对手工修账）。delta_used 为增量(+/-)。"""
+    delta_used: float = Field(..., description="used_amount 冲正增量(+/-)，不可为 0")
+    reason: str = Field(..., min_length=1, description="冲正原因（必填，审计留痕）")
+
+
+class BudgetTransferRequest(BaseModel):
+    """部门间额度调拨：from_dept 转出 amount 到 to_dept（一增一减，同事务）。"""
+    from_dept: str = Field(..., description="转出部门")
+    to_dept: str = Field(..., description="转入部门")
+    amount: float = Field(..., gt=0, description="调拨金额，必须 > 0")
+    reason: str = Field(..., min_length=1, description="调拨原因（必填，审计留痕）")
+    force: bool = Field(False, description="转出后转出方额度低于已用额时需 True 确认")
+
+
+class BudgetAdjustmentResponse(BaseModel):
+    """预算变更流水（审计）一条记录"""
+    id: str
+    department: str
+    fiscal_year: Optional[int] = None
+    change_type: str
+    delta_annual: float
+    delta_used: float
+    before_annual: Optional[float] = None
+    after_annual: Optional[float] = None
+    operator: str
+    operator_role: Optional[str] = ""
+    reason: Optional[str] = ""
+    created_at: Optional[str] = None
 
 
 # =============================================================================

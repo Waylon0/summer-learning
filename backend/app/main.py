@@ -34,9 +34,11 @@ from app.core.exceptions import (
 from app.core.middleware import RequestLoggingMiddleware, log_error
 from app.models import Reimbursement, Invoice, ExpenseItem, DepartmentBudget, ApprovalRecord, User
 from app.models import Conversation, ConversationMessage
+from app.models import BudgetAdjustment
 from app.api.v1.chat import router as chat_router
 from app.api.v1.reimbursements import router as reimb_router
 from app.api.v1.budget import router as budget_router
+from app.api.v1.budget_admin import router as budget_admin_router
 from app.api.v1.upload import router as upload_router
 from app.api.v1.approval import router as approval_router
 from app.api.v1.auth import router as auth_router
@@ -89,6 +91,10 @@ async def _migrate_schema(conn):
         ("expense_items", "currency", "VARCHAR(8) DEFAULT 'CNY'"),
         ("expense_items", "exchange_rate", "NUMERIC(12, 6)"),
         ("expense_items", "original_amount", "NUMERIC(14, 2)"),
+        # department_budget 表扩展字段（预算管理模块 · 阶段一）
+        ("department_budget", "status", "VARCHAR(16) DEFAULT 'active'"),
+        ("department_budget", "note", "VARCHAR(256)"),
+        ("department_budget", "updated_at", "TIMESTAMP WITH TIME ZONE DEFAULT now()"),
     ]
     # 兜底：status 默认值从 pending → draft（新库无所谓，旧库若已有则保留）
     try:
@@ -262,6 +268,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(reimb_router, prefix="/api/v1")
 app.include_router(budget_router, prefix="/api/v1")
+app.include_router(budget_admin_router, prefix="/api/v1")
 app.include_router(upload_router, prefix="/api/v1")
 app.include_router(approval_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")

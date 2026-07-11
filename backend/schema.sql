@@ -1,8 +1,10 @@
 -- ============================================================================
 -- ReimburseAgent — 数据库 Schema (PostgreSQL)
 -- ============================================================================
--- 8 张核心表: users / reimbursements / invoices / department_budget
+-- 9 张核心表: users / reimbursements / invoices / department_budget
 --            / approval_records / expense_policy / conversations / conversation_messages
+--            / budget_adjustment
+-- (另有 expense_items 明细表)
 
 CREATE TABLE IF NOT EXISTS users (
     id              VARCHAR(36) PRIMARY KEY,
@@ -93,8 +95,28 @@ CREATE TABLE IF NOT EXISTS department_budget (
     department      VARCHAR(64) NOT NULL UNIQUE,
     annual_budget   NUMERIC(14, 2) NOT NULL,
     used_amount     NUMERIC(14, 2) NOT NULL DEFAULT 0,
-    fiscal_year     INTEGER NOT NULL
+    fiscal_year     INTEGER NOT NULL,
+    status          VARCHAR(16) DEFAULT 'active',
+    note            VARCHAR(256),
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
+
+-- 部门预算变更流水 / 审计（预算管理模块 · 阶段一）
+CREATE TABLE IF NOT EXISTS budget_adjustment (
+    id              VARCHAR(36) PRIMARY KEY,
+    department      VARCHAR(64) NOT NULL,
+    fiscal_year     INTEGER,
+    change_type     VARCHAR(24) NOT NULL,   -- create/increase/decrease/transfer_in/transfer_out/correction
+    delta_annual    NUMERIC(14, 2) DEFAULT 0,
+    delta_used      NUMERIC(14, 2) DEFAULT 0,
+    before_annual   NUMERIC(14, 2),
+    after_annual    NUMERIC(14, 2),
+    operator        VARCHAR(64) NOT NULL,
+    operator_role   VARCHAR(16),
+    reason          TEXT,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_budget_adjustment_department ON budget_adjustment (department);
 
 CREATE TABLE IF NOT EXISTS approval_records (
     id                 VARCHAR(36) PRIMARY KEY,
