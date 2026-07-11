@@ -853,7 +853,19 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
         new_status = reimb.status
 
     cn = {"approve": "已通过", "reject": "已驳回", "return": "已退回"}[action]
-    extra = ""
+    extra = ""; pdf_url = ""
+    # 审批完成后重新生成 PDF（反映最新审批记录与状态），失败不阻断
+    try:
+        from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db2:
+            from app.services.expense_sheet_svc import ExpenseSheetService
+            reimb_fresh = await ExpenseSheetService(db2).get(reimb_id)
+            info = await generate_and_store_reimbursement_pdf(reimb_fresh)
+            pdf_url = info.get("download_url", "")
+    except Exception as e:
+        logger.warning(f"审批后重新生成 PDF 失败（不阻断）: {e}")
+
     # 一审（部门经理）通过后仍是 pending → 进入二审，同步邮件通知财务（附 PDF、抄送管理员）。
     if action == "approve" and new_status == "pending":
         try:
@@ -869,8 +881,12 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
         except Exception as e:
             logger.warning(f"一审通过后通知财务异常（不阻断）: {e}")
             extra = " ⚠️ 二审邮件通知发送异常，您可稍后让我重发。"
+
+    if pdf_url:
+        extra += f" 已更新报销单 PDF：{pdf_url}（请原样展示给用户）。"
     return {"success": True, "reimb_id": reimb_id, "result": cn,
-            "new_status": new_status, "message": f"报销单 {reimb_id} {cn}。{extra}"}
+            "new_status": new_status, "pdf_download_url": pdf_url,
+            "message": f"报销单 {reimb_id} {cn}。{extra}"}
 
 
 @tool
@@ -894,7 +910,21 @@ async def pay_reimbursement(reimb_id: str, comment: str = "") -> dict:
         except Exception as e:
             logger.error(f"付款失败: {e}")
             return {"success": False, "message": "付款操作失败，请稍后重试。"}
-    return {"success": True, "reimb_id": reimb_id, "result": "已付款", "message": f"报销单 {reimb_id} 已付款。"}
+        # 付款后重新生成 PDF（反映最终状态与完整审批链），失败不阻断
+        pdf_url = ""
+        try:
+            from app.services.expense_sheet_svc import ExpenseSheetService
+            from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+            reimb_fresh = await ExpenseSheetService(db).get(reimb_id)
+            info = await generate_and_store_reimbursement_pdf(reimb_fresh)
+            pdf_url = info.get("download_url", "")
+        except Exception as e:
+            logger.warning(f"付款后重新生成 PDF 失败（不阻断）: {e}")
+    msg = f"报销单 {reimb_id} 已付款。"
+    if pdf_url:
+        msg += f" 已更新报销单 PDF：{pdf_url}（请原样展示给用户）。"
+    return {"success": True, "reimb_id": reimb_id, "result": "已付款",
+            "pdf_download_url": pdf_url, "message": msg}
 
 
 @tool

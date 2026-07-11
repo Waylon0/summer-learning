@@ -55,6 +55,20 @@ async def submit_approval(
         action.comment,
         approver_role=approver.role,
     )
+    # 审批完成后重新生成 PDF（反映最新审批记录），失败不阻断
+    pdf_url = ""
+    try:
+        from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+        from app.services.expense_sheet_svc import ExpenseSheetService
+        reimb_fresh = await ExpenseSheetService(db).get(action.reimbursement_id)
+        info = await generate_and_store_reimbursement_pdf(reimb_fresh)
+        pdf_url = info.get("download_url", "")
+    except Exception as e:
+        logger.warning(f"审批后重新生成 PDF 失败（不阻断）: {e}")
+    result = record.to_dict()
+    if pdf_url:
+        result["pdf_download_url"] = pdf_url
+
     # 一审（部门经理）通过 → 报销单仍为 pending → 进入二审，自动邮件通知财务
     if action.action == "approve":
         reimb = await db.get(Reimbursement, action.reimbursement_id)
@@ -64,7 +78,7 @@ async def submit_approval(
                 dispatch_reimbursement_notification(action.reimbursement_id, "finance")
             except Exception as e:
                 logger.warning(f"一审通过后通知财务失败（不阻断）: {e}")
-    return record.to_dict()
+    return result
 
 
 @router.post("/pay")
@@ -85,5 +99,18 @@ async def pay_reimbursement(
         )
     except BusinessException as e:
         raise HTTPException(status_code=400, detail=e.message)
+    # 付款后重新生成 PDF（反映最终状态与完整审批链），失败不阻断
+    pdf_url = ""
+    try:
+        from app.services.pdf_svc import generate_and_store_reimbursement_pdf
+        from app.services.expense_sheet_svc import ExpenseSheetService
+        reimb_fresh = await ExpenseSheetService(db).get(req.reimbursement_id)
+        info = await generate_and_store_reimbursement_pdf(reimb_fresh)
+        pdf_url = info.get("download_url", "")
+    except Exception as e:
+        logger.warning(f"付款后重新生成 PDF 失败（不阻断）: {e}")
+    result = record.to_dict()
+    if pdf_url:
+        result["pdf_download_url"] = pdf_url
     logger.info(f"付款请求: user={user.username} reimb={req.reimbursement_id}")
-    return record.to_dict()
+    return result
