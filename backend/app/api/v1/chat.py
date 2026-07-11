@@ -83,6 +83,7 @@ def _tool_label(name: str) -> str:
         "ocr_uploaded_invoices": "识别上传的发票",
         "submit_reimbursement": "提交报销申请",
         "generate_reimbursement_pdf_doc": "生成报销单PDF",
+        "list_pending_approvals": "查看待审批列表",
         "approve_reimbursement": "审批报销单",
         "pay_reimbursement": "出纳付款",
     }.get(name, name)
