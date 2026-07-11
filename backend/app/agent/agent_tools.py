@@ -201,7 +201,9 @@ async def ocr_uploaded_invoices() -> dict:
         "total_amount": round(total, 2),
         "invoices": invoices,
         "message": (
-            f"识别到 {len(invoices)} 张发票{qr_note}，合计 ¥{total:,.2f}"
+            f"识别到 {len(invoices)} 张发票{qr_note}，合计 ¥{total:,.2f}。"
+            f"这是【本轮上传】的发票，请关联到当前草稿的对应明细（attach_invoice），"
+            f"用完后不得跨其他报销单混用。"
             if invoices else "上传的文件未能识别出有效发票。"
         ),
     }
@@ -511,7 +513,27 @@ async def view_reimbursement_draft(reimb_id: str = "") -> dict:
                 return {"success": False, "message": "无权查看该报销单。"}
         v = svc.validate(reimb)
         sheet = _fmt_sheet(reimb)
-    return {"success": True, "sheet": sheet, "validation": v}
+    # 构建一目了然的预览汇报（总额 + 分类小计 + 缺票警告）
+    warnings = v.get("warnings", [])
+    errors = v.get("errors", [])
+    preview_parts = [
+        f"📋 报销单预览（{sheet['title']}，共 {sheet['item_count']} 条明细）",
+        f"总额：¥{sheet['total_amount']:,.2f}  "
+        f"（需票: ¥{sheet.get('invoice_amount',0):,.2f}  |  "
+        f"补贴: ¥{sheet.get('subsidy_amount',0):,.2f}）",
+    ]
+    for cat in sheet.get("category_subtotals", []):
+        preview_parts.append(f"  {cat['category']}: ¥{cat['amount']:,.2f}")
+    if errors:
+        preview_parts.append(f"⚠️ 校验未通过 ({len(errors)} 项): " + "; ".join(errors[:3]))
+    if warnings:
+        preview_parts.append(f"💡 提示 ({len(warnings)} 项): " + "; ".join(warnings[:3]))
+    preview_parts.append("")
+    preview_parts.append("请将以上预览完整展示给用户，等用户明确确认「可以提交」后，再调用 submit_reimbursement。")
+    return {
+        "success": True, "sheet": sheet, "validation": v,
+        "message": "\n".join(preview_parts),
+    }
 
 
 @tool
@@ -611,9 +633,89 @@ async def generate_reimbursement_pdf_doc(reimb_id: str) -> dict:
 # 9. 审批
 # =============================================================================
 @tool
+async def list_pending_approvals() -> dict:
+    """列出【当前登录用户本人】待审批的报销单，已按角色与审批阶段自动过滤。
+
+    - 经理：只返回本部门阶段一（部门经理审批）待处理的单；
+    - 财务：只返回阶段二（财务审批）待处理的单；
+    - 管理员：返回全部待审批的单；
+    - 员工：无审批权限，返回空列表。
+
+    用于审批流程第一步——先了解有哪些单需要处理，然后再逐张与用户确认。
+    返回每张单的摘要（单号、申请人、部门、金额、当前阶段、摘要）。"""
+    from app.core.database import AsyncSessionLocal
+    from app.models.reimbursement import Reimbursement
+    from app.core.approval_rules import can_role_approve_step
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    c = _ctx()
+    uid, role, dept = c.get("user_id", ""), c.get("user_role", ""), c.get("user_department", "")
+
+    if role not in ("manager", "admin", "finance"):
+        return {"has_approval_rights": False, "count": 0, "items": [],
+                "message": "您没有审批权限（当前角色: employee）。只有部门经理、财务或管理员可审批。"}
+
+    async with AsyncSessionLocal() as db:
+        conds = [Reimbursement.status == "pending"]
+        if role == "manager":
+            conds.append(Reimbursement.department == dept)
+        stmt = (
+            select(Reimbursement)
+            .options(
+                selectinload(Reimbursement.approvals),
+                selectinload(Reimbursement.items),
+            )
+            .where(*conds)
+            .order_by(Reimbursement.created_at.desc())
+        )
+        reimbs = (await db.execute(stmt)).scalars().all()
+
+    items = []
+    for r in reimbs:
+        pending = sorted(
+            [a for a in (r.approvals or []) if a.action == "pending"],
+            key=lambda a: a.step,
+        )
+        if not pending:
+            continue
+        stage_title = pending[0].approver  # "部门经理" or "财务审批"
+        if not can_role_approve_step(role, stage_title):
+            continue  # wrong stage for this role
+
+        items.append({
+            "reimb_id": r.id,
+            "user_name": r.user_name,
+            "department": r.department,
+            "expense_type": r.expense_type,
+            "title": r.title or "",
+            "total_amount": float(r.total_amount or 0),
+            "current_stage": stage_title,
+            "item_count": len(r.items or []),
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        })
+
+    return {
+        "has_approval_rights": True,
+        "count": len(items),
+        "items": items,
+        "message": (
+            f"您当前有 {len(items)} 张待审批报销单（角色: {role}，部门: {dept}）"
+            if items else
+            f"目前没有需要您审批的报销单（角色: {role}，部门: {dept}）"
+        ),
+    }
+
+
+@tool
 async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -> dict:
-    """审批一张报销单。action: approve(通过)/reject(驳回)/return(退回)。
-    权限：仅经理(限本部门)、管理员、财务可操作。"""
+    """对【一张】报销单执行审批操作。
+    务必先调用 list_pending_approvals 确认该单在当前用户的待审列表中，
+    并且用户已明确表态（通过/驳回/退回）后再调用，绝不未经确认自行审批。
+    action: approve(通过)/reject(驳回)/return(退回)。
+    comment: 审批意见（驳回时建议询问原因后填入；用户不愿说明时可留空）。
+    权限：仅经理(限本部门)、管理员、财务可操作。
+    批量审批：对每一张分别调用本工具，不要一次传多张。"""
     from app.core.database import AsyncSessionLocal
     from app.services.reimbursement_svc import ApprovalService
     from app.models.reimbursement import Reimbursement
@@ -622,7 +724,7 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
     c = _ctx()
     uname, role, dept = c.get("user_name", "") or "审批人", c.get("user_role", ""), c.get("user_department", "")
     if role not in ("manager", "admin", "finance"):
-        return {"success": False, "message": "您没有审批权限，只有经理或管理员可审批。"}
+        return {"success": False, "message": "您没有审批权限，只有部门经理、财务或管理员可审批。"}
     action = (action or "").lower()
     if action not in ("approve", "reject", "return"):
         return {"success": False, "message": "无效的审批动作，应为 approve/reject/return。"}
@@ -686,6 +788,7 @@ AGENT_TOOLS = [
     view_reimbursement_draft,
     submit_reimbursement,
     generate_reimbursement_pdf_doc,
+    list_pending_approvals,
     approve_reimbursement,
     pay_reimbursement,
 ]

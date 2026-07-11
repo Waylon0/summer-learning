@@ -97,6 +97,11 @@ export default function App() {
     return <AuthPage />;
   }
 
+  // 角色权限：员工不可访问审批页
+  if (user && user.role === 'employee' && active === 'approval') {
+    setActive('chat');
+  }
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <style>{`
@@ -176,11 +181,7 @@ export default function App() {
           mode="inline"
           selectedKeys={[active]}
           onClick={({ key }) => setActive(key)}
-          items={(() => {
-            if (user.role === 'admin') return [...baseMenuItems, adminMenuItem];
-            if (user.role === 'employee') return baseMenuItems.filter((m) => m.key !== 'approval');
-            return baseMenuItems;
-          })()}
+          items={user.role === 'admin' ? [...baseMenuItems, adminMenuItem] : user.role === 'employee' ? baseMenuItems.filter((item) => item.key !== 'approval') : baseMenuItems}
           style={{ background: 'transparent', borderRight: 0, marginTop: 8 }}
         />
       </Sider>

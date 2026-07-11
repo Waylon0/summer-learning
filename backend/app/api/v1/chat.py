@@ -34,15 +34,48 @@ router = APIRouter(tags=["chat"])
 # =============================================================================
 # 辅助
 # =============================================================================
+# 斜杠命令（以 "/" 开头，直接由后端处理，不经过 Agent/LLM）
+_CTX_RESET_CMDS = frozenset({"/new", "/重置", "/clear", "/reset"})
+_SLASH_COMMANDS: dict[str, str] = {
+    "/new": "重置会话上下文——后续对话不再携带之前的聊天记录，相当于全新会话。",
+    "/重置": "同 /new。",
+    "/clear": "同 /new。",
+    "/reset": "同 /new。",
+    "/help": "显示所有可用的斜杠命令与常用操作指引。",
+    "/context": "显示当前会话上下文信息（角色、部门、是否已建草稿等）。",
+    "/status": "同 /context。",
+}
+_HIDDEN_CMDS = frozenset({"/reset"})  # 别名不在 help 展示
+
+_HELP_TEXT = """📋 可用快捷命令（以 / 开头，直接生效，无需等 AI 思考）：
+
+/new — 重置当前会话的上下文（之后对话不再参考之前的聊天记录）
+/help — 显示本帮助
+
+常用操作：
+• 查看部门预算 → "查看部门的预算余额"
+• 查看待审批报销单 → "看看需要我审批的单子"
+• 提交报销 → "我要报销出差"
+• 查询报销进度 → "查询我的报销单"
+"""
+
+
 def _sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 async def _load_history_messages(conversation_id: str) -> list:
-    """读取会话全部历史消息，转成 LangChain 消息列表（不设条数上限）。"""
+    """读取会话消息，转成 LangChain 消息列表。跳过最近一次 /new 之前的旧消息。"""
     async with AsyncSessionLocal() as db:
         svc = ConversationService(db)
         rows = await svc.get_messages(conversation_id)
+    # 找到最后一条上下文重置命令（/new /重置 /clear），其之前的历史全部略过
+    reset_idx = -1
+    for i, m in enumerate(rows):
+        if m.role == "user" and (m.content or "").strip().split()[0] in _CTX_RESET_CMDS:
+            reset_idx = i
+    if reset_idx >= 0:
+        rows = rows[reset_idx:]  # 含 /new 自身及之后的消息
     msgs = []
     for m in rows:
         if m.role == "user":
@@ -50,6 +83,25 @@ async def _load_history_messages(conversation_id: str) -> list:
         elif m.role == "assistant":
             msgs.append(AIMessage(content=m.content))
     return msgs
+
+
+def _handle_slash_command(msg: str, user: User) -> tuple[bool, str]:
+    """处理斜杠命令（同步部分），返回 (已处理, 回复文本)。未被识别时返回 (False, "")。"""
+    cmd = (msg or "").strip().split()[0] if msg else ""
+    if not cmd.startswith("/"):
+        return (False, "")
+    if cmd in _CTX_RESET_CMDS:
+        return (True, "✅ 上下文已重置。从现在开始，这是一个全新的对话，不再携带之前的聊天记录。")
+    if cmd in ("/help", "/h", "/?"):
+        return (True, _HELP_TEXT)
+    if cmd in ("/context", "/status"):
+        # 基本上下文由 get_current_user_context 提供（异步），这里仅返回角色信息
+        return (True,
+                f"📋 当前会话上下文\n"
+                f"  • 角色: {user.role} — {user.department}\n"
+                f"  • 用户名: {user.name}")
+    # 未知命令
+    return (True, f"未知命令 {cmd}。可用命令：/new（重置上下文）、/help（帮助）。")
 
 
 async def _ensure_conversation(conversation_id: str | None, user: User) -> str:
@@ -83,6 +135,7 @@ def _tool_label(name: str) -> str:
         "ocr_uploaded_invoices": "识别上传的发票",
         "submit_reimbursement": "提交报销申请",
         "generate_reimbursement_pdf_doc": "生成报销单PDF",
+        "list_pending_approvals": "查看待审批列表",
         "approve_reimbursement": "审批报销单",
         "pay_reimbursement": "出纳付款",
     }.get(name, name)
@@ -117,6 +170,13 @@ async def chat(request: ChatRequest, req: Request, user: User = Depends(get_curr
         raise AgentExecutionError(detail="LLM 未配置，智能体不可用")
 
     conversation_id = await _ensure_conversation(request.session_id, user)
+
+    # 斜杠命令直接处理，不经过 Agent
+    handled, reply = _handle_slash_command(request.message, user)
+    if handled:
+        await _persist_turn(conversation_id, request.message, reply, reasoning=None)
+        return ChatResponse(reply=reply, session_id=conversation_id, intent="slash_command", entities={"cmd": request.message.strip().split()[0]})
+
     history = await _load_history_messages(conversation_id)
     history.append(HumanMessage(content=request.message))
 
@@ -154,6 +214,22 @@ async def _chat_stream(request: ChatRequest, user: User):
         raise HTTPException(status_code=503, detail="LLM 未配置，智能体不可用")
 
     conversation_id = await _ensure_conversation(request.session_id, user)
+
+    # 斜杠命令直接处理，不经过 Agent
+    handled, reply = _handle_slash_command(request.message, user)
+    if handled:
+        async def slash_stream():
+            yield _sse_event("start", {"session_id": conversation_id})
+            for token in reply:
+                yield _sse_event("message", {"content": token})
+            yield _sse_event("done", {"session_id": conversation_id, "elapsed_ms": 0})
+        await _persist_turn(conversation_id, request.message, reply, reasoning=None)
+        return StreamingResponse(
+            slash_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
     history = await _load_history_messages(conversation_id)
     history.append(HumanMessage(content=request.message))
 
