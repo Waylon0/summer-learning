@@ -250,9 +250,9 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <Row gutter={16} style={{ marginBottom: 24 }}>
+      <Row gutter={16} style={{ marginBottom: 24 }} align="stretch">
         <Col span={12}>
-          <Card title="各部门预算使用占比">
+          <Card title="各部门预算使用占比" style={{ height: '100%' }}>
             <div style={{ position: 'relative' }}>
               <div ref={ringRef} style={{ minHeight: 360 }} />
               <div id="ring-center-text" style={{
@@ -268,7 +268,7 @@ export default function Dashboard() {
           </Card>
         </Col>
         <Col span={12}>
-          <Card title="各部门预算对比"><div ref={barRef} style={{ minHeight: 360 }} /></Card>
+          <Card title="各部门预算对比" style={{ height: '100%' }}><div ref={barRef} style={{ minHeight: 360 }} /></Card>
         </Col>
       </Row>
 
