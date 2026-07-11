@@ -49,9 +49,9 @@ const pageMap: Record<string, React.ReactNode> = {
 };
 
 const roleDefaults: Record<string, string> = {
-  employee: 'chat',
+  employee: 'dashboard',
   manager: 'dashboard',
-  finance: 'approval',
+  finance: 'dashboard',
   admin: 'dashboard',
 };
 
