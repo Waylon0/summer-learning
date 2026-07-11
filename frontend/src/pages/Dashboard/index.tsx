@@ -189,12 +189,8 @@ export default function Dashboard() {
         </Col>
         <Col span={6}>
           <Card style={{ height: '100%' }}>
-            <Statistic
-              title={<>本月报销 <FileTextOutlined /></>}
-              value={personal?.current_month?.count || 0}
-              suffix={`笔 / ¥${(personal?.current_month?.total || 0).toLocaleString()}`}
-              valueStyle={{ color: '#1677ff' }}
-            />
+            <Statistic title="本月报销" value={personal?.current_month?.count || 0} precision={0} prefix={<FileTextOutlined />} suffix={`笔 / ¥${(personal?.current_month?.total || 0).toLocaleString()}`}
+              valueStyle={{ color: '#1677ff' }} formatter={(v) => `${v}`} />
           </Card>
         </Col>
       </Row>
