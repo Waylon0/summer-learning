@@ -263,3 +263,41 @@ def get_chroma_client():
         return chromadb.PersistentClient(path=str(CHROMA_DIR))
     except Exception:
         return None
+
+
+# =============================================================================
+# 只读诊断辅助（知识库管理模块 · 阶段二新增；不改动上面任何既有逻辑）
+# =============================================================================
+def collection_chunk_count() -> int:
+    """返回向量库集合 reimbursement_knowledge 当前的分块数（不可用时返回 0）。"""
+    try:
+        import chromadb
+        from chromadb.config import Settings as ChromaSettings
+        client = chromadb.PersistentClient(
+            path=str(CHROMA_DIR),
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+        collection = client.get_collection("reimbursement_knowledge")
+        return int(collection.count())
+    except Exception:
+        return 0
+
+
+def embedding_backend_name() -> str:
+    """返回当前生效的 embedding 后端标识（用于状态展示，不触发下载）。
+
+    仅在已初始化 _embedding_fn 时报告其类型；未初始化则返回 'uninitialized'。
+    """
+    fn = _embedding_fn
+    if fn is None:
+        return "uninitialized"
+    # sentence-transformers 模型
+    try:
+        name = getattr(fn, "_ReimburseModelName", None)
+    except Exception:
+        name = None
+    cls = type(fn).__name__
+    if hasattr(fn, "encode"):
+        return f"sentence-transformers:{cls}"
+    return f"chromadb:{cls}"
+

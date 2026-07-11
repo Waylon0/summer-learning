@@ -1,9 +1,9 @@
 -- ============================================================================
 -- ReimburseAgent — 数据库 Schema (PostgreSQL)
 -- ============================================================================
--- 9 张核心表: users / reimbursements / invoices / department_budget
+-- 10 张核心表: users / reimbursements / invoices / department_budget
 --            / approval_records / expense_policy / conversations / conversation_messages
---            / budget_adjustment
+--            / budget_adjustment / knowledge_audit
 -- (另有 expense_items 明细表)
 
 CREATE TABLE IF NOT EXISTS users (
@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS budget_adjustment (
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_budget_adjustment_department ON budget_adjustment (department);
+
+-- 知识库变更审计（知识库管理模块 · 阶段二）
+CREATE TABLE IF NOT EXISTS knowledge_audit (
+    id              VARCHAR(36) PRIMARY KEY,
+    doc_key         VARCHAR(64) NOT NULL,
+    action          VARCHAR(16) NOT NULL,   -- create/update/disable/enable/reindex
+    operator        VARCHAR(64) NOT NULL,
+    reason          TEXT,
+    reindexed       BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_audit_doc_key ON knowledge_audit (doc_key);
 
 CREATE TABLE IF NOT EXISTS approval_records (
     id                 VARCHAR(36) PRIMARY KEY,

@@ -34,11 +34,12 @@ from app.core.exceptions import (
 from app.core.middleware import RequestLoggingMiddleware, log_error
 from app.models import Reimbursement, Invoice, ExpenseItem, DepartmentBudget, ApprovalRecord, User
 from app.models import Conversation, ConversationMessage
-from app.models import BudgetAdjustment
+from app.models import BudgetAdjustment, KnowledgeAudit
 from app.api.v1.chat import router as chat_router
 from app.api.v1.reimbursements import router as reimb_router
 from app.api.v1.budget import router as budget_router
 from app.api.v1.budget_admin import router as budget_admin_router
+from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.upload import router as upload_router
 from app.api.v1.approval import router as approval_router
 from app.api.v1.auth import router as auth_router
@@ -269,6 +270,7 @@ app.include_router(chat_router, prefix="/api/v1")
 app.include_router(reimb_router, prefix="/api/v1")
 app.include_router(budget_router, prefix="/api/v1")
 app.include_router(budget_admin_router, prefix="/api/v1")
+app.include_router(knowledge_router, prefix="/api/v1")
 app.include_router(upload_router, prefix="/api/v1")
 app.include_router(approval_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")

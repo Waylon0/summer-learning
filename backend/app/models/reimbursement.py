@@ -429,3 +429,36 @@ class BudgetAdjustment(Base):
             "reason": self.reason or "",
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+# =============================================================================
+# 表7：知识库变更审计表（知识库管理模块 · 阶段二）
+# =============================================================================
+class KnowledgeAudit(Base):
+    """
+    知识库（RAG 政策文档）的每一次【人工维护操作】留痕，供审计与追溯。
+
+    方案 A（文件式）：知识真源仍是 data/knowledge/*.md 文件，本表只记录“谁在何时
+    对哪个文档做了什么（新建/编辑/停用/启用/重建），是否触发并成功重建索引”。
+    """
+    __tablename__ = "knowledge_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    doc_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)   # 文档标识（文件名 stem）
+    # 动作：create / update / disable / enable / reindex
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    operator: Mapped[str] = mapped_column(String(64), nullable=False)              # 操作人姓名
+    reason: Mapped[str] = mapped_column(Text, nullable=True)                       # 变更原因（可空）
+    reindexed: Mapped[bool] = mapped_column(Boolean, default=False)               # 本次是否触发并成功重建
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "doc_key": self.doc_key,
+            "action": self.action,
+            "operator": self.operator,
+            "reason": self.reason or "",
+            "reindexed": bool(self.reindexed),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }

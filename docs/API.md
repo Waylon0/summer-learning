@@ -16,6 +16,7 @@
 8. [审批操作](#6-审批操作)
 9. [费用统计](#7-费用统计)
 10. [发票台账](#8-发票台账)
+11. [知识库管理](#8b-知识库管理rag-政策文档在线维护)
 
 ---
 
@@ -937,6 +938,163 @@ Dashboard 顶部汇总卡片。
   ]
 }
 ```
+
+---
+
+## 8b. 知识库管理（RAG 政策文档在线维护）
+
+> 知识库管理模块（阶段二·方案 A 文件式）。以 `data/knowledge/*.md` 为唯一真源，
+> 支持在线查看/编辑/新建/停用/启用文档并（默认）自动重建向量索引，消除政策更新的滞后性。
+>
+> **权限（已敲定）**：编辑/新建/停用/启用/重建 **仅 admin**；读取/状态/检索调试 **admin + finance**。
+> **软删**：停用 = 把 `{doc_key}.md` 重命名为 `{doc_key}.md.disabled`，移出检索但文件保留可恢复（无物理删接口）。
+> **doc_key**：仅允许字母/数字/下划线（1~64 位），杜绝路径遍历。
+> **reindex**：默认 `true`（保存/停用/启用后立即同步重建）；批量修改时可传 `false`，最后统一 `POST /knowledge/reindex`。
+> 重建“尽力而为”：失败不影响文件已保存，返回 `reindexed=false` + 说明，可稍后重试。
+
+### GET /api/v1/knowledge/docs
+
+列出知识库全部文档（含启用 `.md` 与停用 `.md.disabled`）。**权限**：admin/finance。
+
+**成功响应** `200`
+```json
+[
+  { "doc_key": "expense_policy", "title": "费用报销标准", "active": true,
+    "bytes": 3957, "chunks": 12, "updated_at": "2026-07-11T10:03:00" },
+  { "doc_key": "faq", "title": "常见问题", "active": false,
+    "bytes": 3508, "chunks": 8, "updated_at": "2026-07-10T18:20:00" }
+]
+```
+
+---
+
+### GET /api/v1/knowledge/docs/{doc_key}
+
+读取某文档原文（Markdown）。**权限**：admin/finance。
+
+**成功响应** `200`
+```json
+{ "doc_key": "expense_policy", "title": "费用报销标准", "active": true,
+  "content": "# 费用报销标准\n\n## 差旅费\n……", "bytes": 3957, "chunks": 12,
+  "updated_at": "2026-07-11T10:03:00" }
+```
+
+**错误响应**：`404 NOT_FOUND`（文档不存在）；`400 INVALID_DOC_KEY`（doc_key 非法）
+
+---
+
+### PUT /api/v1/knowledge/docs/{doc_key}
+
+保存/覆盖文档正文。**权限**：仅 admin。
+
+**请求体**
+```json
+{ "content": "# 费用报销标准\n\n## 差旅费\n住宿一线城市≤600元/晚\n", "reason": "2026Q3 上调住宿标准", "reindex": true }
+```
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| content | string | 是 | Markdown 正文（非空） |
+| reason | string | 否 | 变更原因（审计留痕） |
+| reindex | bool | 否 | 保存后是否立即重建（默认 true） |
+
+**成功响应** `200`
+```json
+{ "doc_key": "expense_policy", "action": "update", "active": true,
+  "bytes": 4123, "chunks": 13, "reindexed": true,
+  "reindex_message": "索引已重建。", "index_chunks_total": 58 }
+```
+
+**错误响应**：`400 EMPTY_CONTENT` / `400 INVALID_DOC_KEY`；`403`（非 admin）；`422`（content 为空）
+
+---
+
+### POST /api/v1/knowledge/docs
+
+新建文档。**权限**：仅 admin。doc_key 已存在则 400。
+
+**请求体**
+```json
+{ "doc_key": "travel_rule", "content": "# 差旅规则\n\n## 交通\n经济舱\n", "reason": "新增差旅细则", "reindex": true }
+```
+
+**成功响应** `201`（结构同上，`action` 为 `create`）
+
+**错误响应**：`400 DOC_ALREADY_EXISTS` / `400 INVALID_DOC_KEY` / `400 EMPTY_CONTENT`；`403`
+
+---
+
+### POST /api/v1/knowledge/docs/{doc_key}/disable
+
+停用（软删）文档：移出检索，文件重命名为 `.md.disabled` 可恢复。**权限**：仅 admin。
+
+**请求体**（可选）：`{ "reason": "政策废止", "reindex": true }`
+
+**成功响应** `200`
+```json
+{ "doc_key": "faq", "active": false, "reindexed": true,
+  "reindex_message": "索引已重建。", "index_chunks_total": 50 }
+```
+
+**错误响应**：`400 ALREADY_DISABLED`（已停用）；`404 NOT_FOUND`；`403`
+
+---
+
+### POST /api/v1/knowledge/docs/{doc_key}/enable
+
+启用文档：重新纳入检索。**权限**：仅 admin。
+
+**请求体**（可选）：`{ "reason": "政策恢复", "reindex": true }`
+
+**成功响应** `200`：`{ "doc_key": "faq", "active": true, "reindexed": true, ... }`
+
+**错误响应**：`400 ALREADY_ENABLED`（已启用）；`404 NOT_FOUND`；`403`
+
+---
+
+### POST /api/v1/knowledge/reindex
+
+手动同步重建知识库向量索引。**权限**：仅 admin。
+
+**请求体**（可选）：`{ "reason": "批量修改后统一重建" }`
+
+**成功响应** `200`
+```json
+{ "reindexed": true, "reindex_message": "索引已重建。", "index_chunks_total": 58 }
+```
+
+---
+
+### GET /api/v1/knowledge/status
+
+知识库索引状态。**权限**：admin/finance。
+
+**成功响应** `200`
+```json
+{
+  "index_available": true,
+  "embedding_backend": "sentence-transformers:SentenceTransformer",
+  "index_chunks_total": 58,
+  "doc_count": 5,
+  "active_count": 4,
+  "docs": [ { "doc_key": "expense_policy", "active": true, "chunks": 13, "md5": "…" } ]
+}
+```
+
+---
+
+### POST /api/v1/knowledge/search
+
+（调试）对知识库做一次检索，验证更新效果。**权限**：admin/finance。
+
+**请求体**：`{ "query": "住宿标准", "top_k": 3 }`（top_k 1~10，默认 3）
+
+**成功响应** `200`
+```json
+{ "query": "住宿标准", "count": 2,
+  "hits": [ { "content": "……", "score": 0.83, "source": "expense_policy.md", "title": "差旅费" } ] }
+```
+
+**错误响应**：`422`（query 为空 / top_k 越界）
 
 ---
 
