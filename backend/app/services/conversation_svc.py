@@ -11,6 +11,7 @@ app/services/conversation_svc.py — 会话业务逻辑层
 =============================================================================
 """
 import json
+from datetime import datetime, timezone
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -98,7 +99,8 @@ class ConversationService:
         # 触发会话 updated_at 刷新
         conv = await self.db.get(Conversation, conversation_id)
         if conv is not None:
-            conv.updated_at = func.now()
+            # 用 Python 端时间而非 func.now() 表达式，避免属性被标记待刷新引发 MissingGreenlet
+            conv.updated_at = datetime.now(timezone.utc)
         await self.db.commit()
         await self.db.refresh(msg)
         return msg

@@ -15,6 +15,7 @@ app/services/reimbursement_svc.py — 报销业务逻辑层（增强版）
 =============================================================================
 """
 from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import select, func, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -436,7 +437,9 @@ class ApprovalService:
                 error_code="CONSECUTIVE_APPROVAL",
             )
 
-        now = func.now()
+        # 用 Python 端具体时间（而非 func.now() 服务器表达式）：后者会把属性标记为"待刷新"，
+        # 返回对象再被 to_dict() 同步访问时会触发异步惰性刷新 → MissingGreenlet。
+        now = datetime.now(timezone.utc)
 
         if action == "approve":
             if current is not None:
@@ -521,7 +524,7 @@ class ApprovalService:
         )).scalar() + 1
         record = ApprovalRecord(
             reimbursement_id=reimb_id, approver=operator, step=step,
-            action="pay", comment=comment or "出纳已付款", acted_at=func.now(),
+            action="pay", comment=comment or "出纳已付款", acted_at=datetime.now(timezone.utc),
         )
         self.db.add(record)
         await apply_status_transition_budget(self.db, reimb, "paid")
