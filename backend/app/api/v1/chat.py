@@ -145,6 +145,7 @@ def _tool_label(name: str) -> str:
         "list_pending_approvals": "查看待审批列表",
         "approve_reimbursement": "审批报销单",
         "pay_reimbursement": "出纳付款",
+        "resend_approval_notification": "重发审批通知邮件",
     }.get(name, name)
 
 

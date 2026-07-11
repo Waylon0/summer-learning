@@ -650,13 +650,22 @@ async def submit_reimbursement(reimb_id: str = "") -> dict:
         result["message"] = (result.get("message", "") +
                              " PDF 稍后可在系统「文档中心/进度查询」下载（本次未生成下载地址，请勿编造链接）。")
 
-    # 自动邮件通知：提交成功 → 通知申请人所在部门的部门经理进行一审（附 PDF，后台发送不阻断）
+    # 自动邮件通知：提交成功 → 通知申请人所在部门的部门经理进行一审（同步等待结果，
+    # 以便据实告知用户成功/失败；失败时用户可稍后让 agent 重发）。附 PDF、抄送管理员。
     try:
-        from app.services.notification_svc import dispatch_reimbursement_notification
-        dispatch_reimbursement_notification(reimb_id, "manager")
-        result["message"] += " 已自动邮件通知部门经理进行一审。"
+        from app.services.notification_svc import send_reimbursement_notification
+        nres = await send_reimbursement_notification(reimb_id, "manager")
+        if nres.get("success"):
+            result["message"] += f" 已邮件通知部门经理一审（送达 {nres['primary_delivered']} 位）。"
+        else:
+            result["message"] += (
+                f" ⚠️ 一审邮件通知发送失败：{nres.get('reason', '未知原因')}。"
+                "报销单已正常提交，您可稍后对我说\"重发一审通知\"，我会再试一次。"
+            )
+        result["notification"] = nres
     except Exception as e:
-        logger.warning(f"提交后通知部门经理失败（不阻断）: {e}")
+        logger.warning(f"提交后通知部门经理异常（不阻断）: {e}")
+        result["message"] += " ⚠️ 一审邮件通知发送异常，您可稍后让我重发。"
     return result
 
 
@@ -845,14 +854,21 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
 
     cn = {"approve": "已通过", "reject": "已驳回", "return": "已退回"}[action]
     extra = ""
-    # 一审（部门经理）通过后仍是 pending → 进入二审，自动邮件通知财务（附 PDF，后台发送）
+    # 一审（部门经理）通过后仍是 pending → 进入二审，同步邮件通知财务（附 PDF、抄送管理员）。
     if action == "approve" and new_status == "pending":
         try:
-            from app.services.notification_svc import dispatch_reimbursement_notification
-            dispatch_reimbursement_notification(reimb_id, "finance")
-            extra = " 已自动邮件通知财务进行二审。"
+            from app.services.notification_svc import send_reimbursement_notification
+            nres = await send_reimbursement_notification(reimb_id, "finance")
+            if nres.get("success"):
+                extra = f" 已邮件通知财务二审（送达 {nres['primary_delivered']} 位）。"
+            else:
+                extra = (
+                    f" ⚠️ 二审邮件通知发送失败：{nres.get('reason', '未知原因')}。"
+                    "审批已生效，您可稍后对我说\"重发二审通知\"，我会再试一次。"
+                )
         except Exception as e:
-            logger.warning(f"一审通过后通知财务失败（不阻断）: {e}")
+            logger.warning(f"一审通过后通知财务异常（不阻断）: {e}")
+            extra = " ⚠️ 二审邮件通知发送异常，您可稍后让我重发。"
     return {"success": True, "reimb_id": reimb_id, "result": cn,
             "new_status": new_status, "message": f"报销单 {reimb_id} {cn}。{extra}"}
 
@@ -881,6 +897,67 @@ async def pay_reimbursement(reimb_id: str, comment: str = "") -> dict:
     return {"success": True, "reimb_id": reimb_id, "result": "已付款", "message": f"报销单 {reimb_id} 已付款。"}
 
 
+@tool
+async def resend_approval_notification(reimb_id: str = "") -> dict:
+    """重新发送某报销单【当前待审批阶段】的邮件通知（附 PDF、抄送管理员）。
+    当上一次自动通知发送失败时，用户可让你重发。
+
+    reimb_id 留空时，默认取当前用户【本人最近一张待审批的报销单】（适用于申请人重发一审）。
+    权限：申请人可重发本人单的一审；本部门经理可重发本部门单的二审；管理员可重发任意。
+    仅当报销单处于"待审批(pending)"时可重发。"""
+    from app.core.database import AsyncSessionLocal
+    from app.services.expense_sheet_svc import ExpenseSheetService
+    from app.services.notification_svc import (
+        send_reimbursement_notification, infer_current_stage, can_resend,
+    )
+    from app.core.exceptions import ReimbursementNotFoundError
+    from app.models.reimbursement import Reimbursement
+    from sqlalchemy import select
+
+    c = _ctx()
+    uid, role, dept = c.get("user_id", ""), c.get("user_role", ""), c.get("user_department", "")
+    if not uid:
+        return {"success": False, "message": "您尚未登录。"}
+
+    async with AsyncSessionLocal() as db:
+        svc = ExpenseSheetService(db)
+        if not reimb_id:
+            # 默认取本人最近一张待审批报销单
+            row = (await db.execute(
+                select(Reimbursement)
+                .where(Reimbursement.user_id == uid, Reimbursement.status == "pending")
+                .order_by(Reimbursement.updated_at.desc()).limit(1)
+            )).scalar_one_or_none()
+            if not row:
+                return {"success": False, "message": "未找到需要重发通知的报销单，请提供报销单号。"}
+            reimb_id = row.id
+        try:
+            reimb = await svc.get(reimb_id)
+        except ReimbursementNotFoundError:
+            return {"success": False, "message": f"未找到报销单 {reimb_id}"}
+        if reimb.status != "pending":
+            return {"success": False,
+                    "message": f"报销单 {reimb_id} 当前状态为「{reimb.status}」，非待审批，无需再发送审批提醒。"}
+        stage = infer_current_stage(reimb)
+        reimb_user_id, reimb_dept = reimb.user_id, reimb.department
+
+    if not stage:
+        return {"success": False, "message": "未找到该报销单当前的待审批阶段。"}
+    if not can_resend(stage, role, uid, reimb_user_id, dept, reimb_dept):
+        return {"success": False,
+                "message": "您无权重发该报销单的审批通知（申请人可重发一审；本部门经理可重发二审；管理员不限）。"}
+
+    nres = await send_reimbursement_notification(reimb_id, stage)
+    stage_cn = nres.get("stage_cn", stage)
+    if nres.get("success"):
+        return {"success": True, "reimb_id": reimb_id, "stage": stage, "notification": nres,
+                "message": f"已重新发送{stage_cn}通知，送达主审 {nres['primary_delivered']} 位"
+                           + (f"、抄送管理员 {nres['admin_delivered']} 位。" if nres.get('admin_delivered') else "。")}
+    return {"success": False, "reimb_id": reimb_id, "stage": stage, "notification": nres,
+            "message": f"重发{stage_cn}通知仍未成功：{nres.get('reason', '未知原因')}。"
+                       "请核对相关审批人是否已绑定有效邮箱，或稍后再试。"}
+
+
 AGENT_TOOLS = [
     get_current_user_context,
     get_expense_policy,
@@ -900,4 +977,5 @@ AGENT_TOOLS = [
     list_pending_approvals,
     approve_reimbursement,
     pay_reimbursement,
+    resend_approval_notification,
 ]
