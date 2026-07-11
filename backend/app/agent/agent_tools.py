@@ -10,7 +10,7 @@ app/agent/agent_tools.py — ReAct Agent 工具集（LangChain @tool）
     工具内部读取，不暴露给 LLM，杜绝越权/伪造。
   - 查询/开票/审批等均按角色做权限收窄（员工本人 / 经理本部门 / 管理员全部）。
 
-工具清单:
+工具清单（共 19 个，与文件末尾 AGENT_TOOLS 列表一一对应）:
   1. get_current_user_context   — 获取当前用户信息（部门/角色）
   2. get_expense_policy         — RAG 检索费用政策/标准/流程（增强，不做意图理解）
   3. get_department_budget      — 查询部门预算余额
@@ -19,13 +19,19 @@ app/agent/agent_tools.py — ReAct Agent 工具集（LangChain @tool）
   6. ocr_uploaded_invoices      — OCR 识别本轮上传的发票，返回结构化信息与金额
   --- 分步式报销（企业级：草稿→逐条明细→校验→提交）---
   7. start_reimbursement_draft  — 创建报销单草稿
-  8. add_expense_item           — 逐条添加费用明细（自动判定发票/补贴）
-  9. remove_expense_item        — 删除明细
-  10. attach_invoice            — 为明细行关联发票
-  11. view_reimbursement_draft  — 查看草稿（分类小计/明细/缺票项）
-  12. submit_reimbursement      — 严格校验后提交进入审批
-  13. generate_reimbursement_pdf_doc — 为已有报销单生成报销单 PDF
-  14. approve_reimbursement     — 审批（通过/驳回/退回）
+  8. list_my_drafts            — 列出当前用户所有未提交草稿
+  9. add_expense_item           — 逐条添加费用明细（自动判定发票/补贴）
+  10. update_expense_item       — 修改已存在明细（保留已附发票）
+  11. remove_expense_item       — 删除明细
+  12. attach_invoice            — 为明细行关联发票
+  13. view_reimbursement_draft  — 查看草稿（分类小计/明细/缺票项）
+  14. submit_reimbursement      — 严格校验后提交进入审批
+  15. generate_reimbursement_pdf_doc — 为报销单（含草稿预览）生成报销单 PDF
+  --- 审批与付款 ---
+  16. list_pending_approvals    — 列出当前用户待审批单（按角色+阶段过滤）
+  17. approve_reimbursement     — 审批（通过/驳回/退回）
+  18. pay_reimbursement         — 出纳付款（approved→paid）
+  19. resend_approval_notification — 重发当前阶段审批通知邮件
 =============================================================================
 """
 from __future__ import annotations

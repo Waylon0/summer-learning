@@ -188,7 +188,7 @@ def get_agent():
             tools=AGENT_TOOLS,
             prompt=SystemMessage(content=SYSTEM_PROMPT.replace("{company}", settings.COMPANY_NAME)),
         )
-        logger.info(f"ReAct agent compiled with {len(AGENT_TOOLS)} tools (17)")
+        logger.info(f"ReAct agent compiled with {len(AGENT_TOOLS)} tools")
     return _agent
 
 

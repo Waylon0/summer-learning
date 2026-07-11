@@ -2,7 +2,7 @@
 =============================================================================
 app/agent/tools/__init__.py — 工具包导出 + LLM 工具描述
 =============================================================================
-ALL_TOOLS       : 7 个 Agent 工具函数列表
+ALL_TOOLS       : 8 个底层工具函数列表
 TOOL_DESCRIPTIONS : LLM function-calling 工具定义
 =============================================================================
 """
@@ -53,11 +53,6 @@ TOOL_DESCRIPTIONS = [
     {
         "name": "query_reimbursement_status",
         "description": "根据报销单号查询审批流转进度和当前状态。适用于知道具体报销单号的场景。",
-        "parameters": {"reimb_id": "string", "date_from": "string", "date_to": "string"},
-    },
-    {
-        "name": "query_reimbursement_status",
-        "description": "根据报销单号查询审批流转进度和当前状态。",
         "parameters": {"reimb_id": "string", "date_from": "string", "date_to": "string"},
     },
     {

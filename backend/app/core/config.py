@@ -92,9 +92,10 @@ class Settings(BaseModel):
     EMBEDDING_BACKEND: str = "auto"
     # 本地中文向量模型路径或名称（如 shibing624/text2vec-base-chinese 或本地目录）
     EMBEDDING_MODEL: str = "shibing624/text2vec-base-chinese"
-    # 语义路由采纳阈值：最高相似度 ≥ 此值才直接采纳语义结果
+    # [DEPRECATED] 旧「融合意图路由」阈值，已随 ReAct 重构下线（对话主链路为 react_agent，
+    # 意图理解完全交给 LLM）。保留字段仅为兼容历史 .env 中可能残留的同名键，不再被任何代码读取，
+    # 可安全从 .env 移除；后续版本将删除。
     INTENT_SEMANTIC_THRESHOLD: float = 0.72
-    # LLM 意图置信度阈值：≥ 此值直接信任 LLM 结果
     INTENT_LLM_TRUST_THRESHOLD: float = 0.75
 
     @property
