@@ -645,7 +645,9 @@ async def submit_reimbursement(reimb_id: str = "") -> dict:
     # 无地址时明确告知不要虚构。
     if download_url:
         result["message"] = (result.get("message", "") +
-                             f" 报销单 PDF 下载地址：{download_url}（请原样提供给用户，勿改写）。")
+                             f" 报销单 PDF 下载地址：{download_url} "
+                             "（★逐字符原样输出，禁止改文件名/加后缀/加括号，"
+                             "正确形如 /api/v1/upload/files/invoices/<hex>.pdf）。")
     else:
         result["message"] = (result.get("message", "") +
                              " PDF 稍后可在系统「文档中心/进度查询」下载（本次未生成下载地址，请勿编造链接）。")
@@ -714,19 +716,20 @@ async def generate_reimbursement_pdf_doc(reimb_id: str = "") -> dict:
 
     _url = info.get("download_url", "")
     is_draft = (status == "draft")
+    _verbatim = "（★下载地址必须逐字符原样输出，禁止改文件名/加_preview后缀/加括号，正确形如 /api/v1/upload/files/invoices/<hex>.pdf）"
     if is_draft:
         msg = (
-            f"已生成【预览版】报销单 PDF（草稿，尚未提交）：{_url}（请原样展示给用户）。"
+            f"已生成【预览版】报销单 PDF（草稿，尚未提交）。下载地址：{_url} {_verbatim}。"
             "请让用户查看：若满意，再调用 submit_reimbursement 提交；"
             "若需修改，请先协助调整明细后【重新生成预览】。切勿在用户明确确认前提交。"
             if _url else
-            "预览版报销单 PDF 已生成，可在系统「文档中心」下载（本次无下载地址，请勿编造链接）。"
+            "预览版报销单 PDF 生成成功但未获取到下载地址，请勿编造链接；可让用户稍后在系统「文档中心」查看，或重试生成。"
         )
     else:
         msg = (
-            f"报销单 PDF 已生成，下载地址：{_url}（请原样提供给用户，勿改写或编造）。"
+            f"报销单 PDF 已生成。下载地址：{_url} {_verbatim}。"
             if _url else
-            "报销单 PDF 已生成，可在系统「文档中心」下载（本次无下载地址，请勿编造链接）。"
+            "报销单 PDF 已生成但未获取到下载地址，请勿编造链接；可在系统「文档中心」查看。"
         )
     return {"success": True, "reimb_id": rid, "is_draft": is_draft,
             "pdf_download_url": _url, "message": msg}
@@ -892,7 +895,7 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
             extra = " ⚠️ 二审邮件通知发送异常，您可稍后让我重发。"
 
     if pdf_url:
-        extra += f" 已更新报销单 PDF：{pdf_url}（请原样展示给用户）。"
+        extra += " 报销单 PDF 已更新（可在报销单详情/文档中心查看）。"
     return {"success": True, "reimb_id": reimb_id, "result": cn,
             "new_status": new_status, "pdf_download_url": pdf_url,
             "budget_info": budget_info,
@@ -932,7 +935,7 @@ async def pay_reimbursement(reimb_id: str, comment: str = "") -> dict:
             logger.warning(f"付款后重新生成 PDF 失败（不阻断）: {e}")
     msg = f"报销单 {reimb_id} 已付款。"
     if pdf_url:
-        msg += f" 已更新报销单 PDF：{pdf_url}（请原样展示给用户）。"
+        msg += " 报销单 PDF 已更新（可在报销单详情/文档中心查看）。"
     return {"success": True, "reimb_id": reimb_id, "result": "已付款",
             "pdf_download_url": pdf_url, "message": msg}
 

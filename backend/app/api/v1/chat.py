@@ -149,6 +149,26 @@ def _tool_label(name: str) -> str:
     }.get(name, name)
 
 
+def _extract_pdf_url(tool_output) -> str | None:
+    """从工具返回结果中提取真实的 pdf_download_url（仅接受合法的后端相对路径）。
+
+    只认后端自己生成的地址形态 /api/v1/upload/files/...，杜绝把 LLM 编造的、
+    或异常字符串误当作下载地址。前端应据此渲染下载按钮，而不是解析 LLM 文本。
+    """
+    data = tool_output
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+    if not isinstance(data, dict):
+        return None
+    url = data.get("pdf_download_url", "")
+    if isinstance(url, str) and url.startswith("/api/v1/upload/files/"):
+        return url
+    return None
+
+
 def _extract_reimb_id_from_reasoning(reasoning: list[dict]) -> str | None:
     """从思考链工具结果中提取报销单 ID。"""
     for r in reasoning:
@@ -292,6 +312,11 @@ async def _chat_stream(request: ChatRequest, user: User):
                         "tool": name, "label": _tool_label(name),
                         "output": preview[:2000],
                     })
+                    # 从工具结果中提取【真实】PDF 下载地址，作为独立事件下发，
+                    # 让前端渲染可靠的下载按钮（不依赖 LLM 文本，杜绝其编造/改写链接）。
+                    pdf_url = _extract_pdf_url(out_content)
+                    if pdf_url:
+                        yield _sse_event("pdf", {"tool": name, "pdf_download_url": pdf_url})
 
             reply = "".join(reply_parts).strip()
             if not reply:
