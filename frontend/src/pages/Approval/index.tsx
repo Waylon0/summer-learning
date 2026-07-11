@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Card, Button, Table, Tag, Space, Input, message, Spin, Empty, Row, Col, Descriptions, Popconfirm, Tabs, Steps,
+  Card, Button, Table, Tag, Space, Input, message, Spin, Empty, Row, Col, Descriptions, Popconfirm, Tabs,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, RollbackOutlined,
-  ReloadOutlined, AuditOutlined, DollarOutlined,
+  ReloadOutlined, AuditOutlined, DollarOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { getReimbursements, submitApproval, payReimbursement } from '@/services/api';
@@ -229,33 +229,59 @@ export default function Approval() {
                 {selected.approvals.length === 0 ? (
                   <Empty description="暂无审批记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 ) : (
-                  <Steps
-                    direction="vertical"
-                    size="small"
-                    current={(() => {
-                      const idx = selected.approvals.findIndex((a) => a.action === 'pending');
-                      return idx >= 0 ? idx : selected.approvals.length;
-                    })()}
-                    items={selected.approvals.filter((a) => a.action !== 'cancelled').map((a) => {
-                      const isPending = a.action === 'pending';
-                      const isApprove = a.action === 'approve';
-                      const isReject = a.action === 'reject' || a.action === 'return';
-                      const isPay = a.action === 'pay';
-                      return {
-                        title: a.approver || `步骤 ${a.step}`,
-                        description: (
-                          <div>
-                            <Tag color={isPending ? 'processing' : isApprove ? 'success' : isReject ? 'error' : isPay ? 'blue' : 'default'}>
-                              {ACTION[a.action]?.label || a.action}
-                            </Tag>
-                            {a.comment && <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>{a.comment}</div>}
-                            {a.acted_at && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{dayjs(a.acted_at).format('MM-DD HH:mm')}</div>}
+                  <div>
+                    {selected.approvals
+                      .filter((a) => a.action !== 'cancelled')
+                      .sort((a, b) => {
+                        const aDone = a.action !== 'pending';
+                        const bDone = b.action !== 'pending';
+                        if (aDone && !bDone) return -1;
+                        if (!aDone && bDone) return 1;
+                        return a.step - b.step;
+                      })
+                      .map((a, idx, arr) => {
+                        const isPending = a.action === 'pending';
+                        const isApprove = a.action === 'approve';
+                        const isReject = a.action === 'reject' || a.action === 'return';
+                        const isPay = a.action === 'pay';
+                        const firstPendingIdx = arr.findIndex((x) => x.action === 'pending');
+                        const isCurrentPending = isPending && idx === firstPendingIdx;
+                        const isFuturePending = isPending && idx !== firstPendingIdx;
+                        return (
+                          <div
+                            key={a.step}
+                            style={{
+                              padding: '10px 14px',
+                              marginBottom: 8,
+                              borderRadius: 8,
+                              border: isCurrentPending ? '2px solid #1677ff' : isFuturePending ? '1px dashed #d9d9d9' : '1px solid #b7eb8f',
+                              background: isCurrentPending ? '#e6f4ff' : isFuturePending ? '#fafafa' : '#f6ffed',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <Space>
+                                {isCurrentPending ? (
+                                  <SyncOutlined spin style={{ color: '#1677ff' }} />
+                                ) : isFuturePending ? (
+                                  <span style={{ color: '#bfbfbf', fontSize: 14 }}>○</span>
+                                ) : (
+                                  <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                )}
+                                <span style={{ fontWeight: 600, color: isFuturePending ? '#999' : undefined }}>
+                                  {a.approver || `步骤 ${a.step}`}
+                                </span>
+                                {isFuturePending && <span style={{ fontSize: 11, color: '#bfbfbf' }}>等待中</span>}
+                              </Space>
+                              <Tag color={isPending ? 'processing' : isApprove ? 'success' : isReject ? 'error' : isPay ? 'blue' : 'default'}>
+                                {ACTION[a.action]?.label || a.action}
+                              </Tag>
+                            </div>
+                            {a.comment && <div style={{ color: '#666', fontSize: 12, marginTop: 6 }}>{a.comment}</div>}
+                            {a.acted_at && <div style={{ fontSize: 11, color: '#bbb', marginTop: 4 }}>{dayjs(a.acted_at).format('MM-DD HH:mm')}</div>}
                           </div>
-                        ),
-                        status: isPending ? 'process' : isReject ? 'error' : 'finish',
-                      } as never;
-                    })}
-                  />
+                        );
+                      })}
+                  </div>
                 )}
               </Card>
 
