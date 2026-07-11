@@ -6,35 +6,12 @@ import { SearchOutlined, ReloadOutlined, ClockCircleOutlined, CheckCircleOutline
 import dayjs from 'dayjs';
 import { getReimbursements, getReimbursement } from '@/services/api';
 import type { ReimbursementRecord, ApprovalRecord } from '@/types';
-
-const statusMap: Record<string, { color: string; label: string }> = {
-  pending: { color: 'processing', label: '待审批' },
-  approved: { color: 'success', label: '已通过' },
-  rejected: { color: 'error', label: '已驳回' },
-  returned: { color: 'warning', label: '已退回' },
-  paid: { color: 'success', label: '已支付' },
-};
+import { STATUS, ACTION, EXPENSE_TYPE } from '@/constants';
 
 const statusFilters = [
   { label: '全部', value: '' },
-  { label: '待审批', value: 'pending' },
-  { label: '已通过', value: 'approved' },
-  { label: '已驳回', value: 'rejected' },
-  { label: '已退回', value: 'returned' },
-  { label: '已支付', value: 'paid' },
+  ...Object.entries(STATUS).map(([k, v]) => ({ label: v.label, value: k })),
 ];
-
-const actionIcons: Record<string, React.ReactNode> = {
-  approve: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
-  reject: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
-  return: <ClockCircleOutlined style={{ color: '#faad14' }} />,
-};
-
-const actionLabels: Record<string, string> = {
-  approve: '通过',
-  reject: '驳回',
-  return: '退回',
-};
 
 function ApprovalTimeline({ approvals }: { approvals: ApprovalRecord[] }) {
   return (
@@ -42,15 +19,12 @@ function ApprovalTimeline({ approvals }: { approvals: ApprovalRecord[] }) {
       items={[
         { color: 'blue', children: <div style={{ fontWeight: 500 }}>提交报销申请</div> },
         ...approvals.map((a) => ({
-          color: a.action === 'approve' ? 'green' : a.action === 'reject' ? 'red' : 'orange',
-          dot: actionIcons[a.action],
+          color: ACTION[a.action]?.color === 'success' ? 'green' : ACTION[a.action]?.color === 'error' ? 'red' : ACTION[a.action]?.color === 'warning' ? 'orange' : 'blue',
           children: (
             <div>
               <Space>
                 <strong>{a.approver}</strong>
-                <Tag color={a.action === 'approve' ? 'success' : a.action === 'reject' ? 'error' : 'warning'}>
-                  {actionLabels[a.action]}
-                </Tag>
+                <Tag color={ACTION[a.action]?.color}>{ACTION[a.action]?.label || a.action}</Tag>
                 <span style={{ fontSize: 12, color: '#999' }}>
                   {a.acted_at ? dayjs(a.acted_at).format('MM-DD HH:mm') : '-'}
                 </span>
@@ -179,9 +153,9 @@ export default function StatusQuery() {
                   <tbody>
                     <tr><td style={{ color: '#999' }}>申请人</td><td>{detail.user_name}</td></tr>
                     <tr><td style={{ color: '#999' }}>部门</td><td>{detail.department}</td></tr>
-                    <tr><td style={{ color: '#999' }}>费用类型</td><td>{detail.expense_type}</td></tr>
+                    <tr><td style={{ color: '#999' }}>费用类型</td><td>{EXPENSE_TYPE[detail.expense_type] || detail.expense_type}</td></tr>
                     <tr><td style={{ color: '#999' }}>金额</td><td style={{ fontWeight: 600, color: '#1677ff', fontSize: 16 }}>¥{detail.total_amount.toLocaleString()}</td></tr>
-                    <tr><td style={{ color: '#999' }}>状态</td><td><Tag color={statusMap[detail.status]?.color}>{statusMap[detail.status]?.label}</Tag></td></tr>
+                    <tr><td style={{ color: '#999' }}>状态</td><td><Tag color={STATUS[detail.status]?.color}>{STATUS[detail.status]?.label}</Tag></td></tr>
                     <tr><td style={{ color: '#999' }}>创建时间</td><td>{detail.created_at ? dayjs(detail.created_at).format('YYYY-MM-DD HH:mm') : '-'}</td></tr>
                   </tbody>
                 </table>
@@ -231,14 +205,14 @@ export default function StatusQuery() {
                 { title: '报销单号', dataIndex: 'id', key: 'id', width: 140, render: (v: string) => v.slice(0, 8) + '...' },
                 { title: '申请人', dataIndex: 'user_name', key: 'user_name', width: 100 },
                 { title: '部门', dataIndex: 'department', key: 'department', width: 100 },
-                { title: '费用类型', dataIndex: 'expense_type', key: 'expense_type', width: 100 },
+                { title: '费用类型', dataIndex: 'expense_type', key: 'expense_type', width: 100, render: (v: string) => EXPENSE_TYPE[v] || v },
                 {
                   title: '金额', dataIndex: 'total_amount', key: 'total_amount', width: 130,
                   render: (v: number) => <span style={{ fontWeight: 600 }}>¥{v.toLocaleString()}</span>,
                 },
                 {
                   title: '状态', dataIndex: 'status', key: 'status', width: 90,
-                  render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label}</Tag>,
+                  render: (s: string) => <Tag color={STATUS[s]?.color}>{STATUS[s]?.label}</Tag>,
                 },
                 {
                   title: '创建时间', dataIndex: 'created_at', key: 'created_at', flex: 1,
