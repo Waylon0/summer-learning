@@ -201,7 +201,9 @@ async def ocr_uploaded_invoices() -> dict:
         "total_amount": round(total, 2),
         "invoices": invoices,
         "message": (
-            f"识别到 {len(invoices)} 张发票{qr_note}，合计 ¥{total:,.2f}"
+            f"识别到 {len(invoices)} 张发票{qr_note}，合计 ¥{total:,.2f}。"
+            f"这是【本轮上传】的发票，请关联到当前草稿的对应明细（attach_invoice），"
+            f"用完后不得跨其他报销单混用。"
             if invoices else "上传的文件未能识别出有效发票。"
         ),
     }
@@ -511,7 +513,27 @@ async def view_reimbursement_draft(reimb_id: str = "") -> dict:
                 return {"success": False, "message": "无权查看该报销单。"}
         v = svc.validate(reimb)
         sheet = _fmt_sheet(reimb)
-    return {"success": True, "sheet": sheet, "validation": v}
+    # 构建一目了然的预览汇报（总额 + 分类小计 + 缺票警告）
+    warnings = v.get("warnings", [])
+    errors = v.get("errors", [])
+    preview_parts = [
+        f"📋 报销单预览（{sheet['title']}，共 {sheet['item_count']} 条明细）",
+        f"总额：¥{sheet['total_amount']:,.2f}  "
+        f"（需票: ¥{sheet.get('invoice_amount',0):,.2f}  |  "
+        f"补贴: ¥{sheet.get('subsidy_amount',0):,.2f}）",
+    ]
+    for cat in sheet.get("category_subtotals", []):
+        preview_parts.append(f"  {cat['category']}: ¥{cat['amount']:,.2f}")
+    if errors:
+        preview_parts.append(f"⚠️ 校验未通过 ({len(errors)} 项): " + "; ".join(errors[:3]))
+    if warnings:
+        preview_parts.append(f"💡 提示 ({len(warnings)} 项): " + "; ".join(warnings[:3]))
+    preview_parts.append("")
+    preview_parts.append("请将以上预览完整展示给用户，等用户明确确认「可以提交」后，再调用 submit_reimbursement。")
+    return {
+        "success": True, "sheet": sheet, "validation": v,
+        "message": "\n".join(preview_parts),
+    }
 
 
 @tool
@@ -640,7 +662,10 @@ async def list_pending_approvals() -> dict:
             conds.append(Reimbursement.department == dept)
         stmt = (
             select(Reimbursement)
-            .options(selectinload(Reimbursement.approvals))
+            .options(
+                selectinload(Reimbursement.approvals),
+                selectinload(Reimbursement.items),
+            )
             .where(*conds)
             .order_by(Reimbursement.created_at.desc())
         )
