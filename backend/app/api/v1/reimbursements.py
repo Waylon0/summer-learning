@@ -338,6 +338,12 @@ async def submit_draft(
     if not result.get("success"):
         # 校验失败返回 400 + 详情
         raise HTTPException(status_code=400, detail=result.get("message", "提交失败"))
+    # 提交成功 → 自动邮件通知部门经理进行一审（附 PDF，后台发送不阻断）
+    try:
+        from app.services.notification_svc import dispatch_reimbursement_notification
+        dispatch_reimbursement_notification(reimb_id, "manager")
+    except Exception as e:
+        logger.warning(f"提交后通知部门经理失败（不阻断）: {e}")
     return result
 
 

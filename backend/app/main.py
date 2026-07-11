@@ -44,6 +44,7 @@ from app.api.v1.admin import router as admin_router
 from app.api.v1.stats import router as stats_router
 from app.api.v1.invoices import router as invoices_router
 from app.api.v1.conversations import router as conversations_router
+from app.api.v1.email import router as email_router
 
 settings = get_settings()
 logger = setup_logging()
@@ -268,6 +269,7 @@ app.include_router(admin_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(invoices_router, prefix="/api/v1")
 app.include_router(conversations_router, prefix="/api/v1")
+app.include_router(email_router, prefix="/api/v1")
 
 
 # =============================================================================

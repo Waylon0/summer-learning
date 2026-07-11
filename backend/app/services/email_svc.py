@@ -23,12 +23,20 @@ async def send_email(
     body: str,
     attachment_path: str = None,
     attachment_name: str = None,
+    attachment_bytes: bytes = None,
 ) -> bool:
     """
     发送邮件（自动选择最优认证方式）。
 
+    附件二选一：
+      - attachment_bytes：直接传附件二进制（如从 MinIO/本地存储取出的 PDF 内容），推荐；
+      - attachment_path ：本地文件路径（兼容旧用法）。
+
+    关于收件人：SMTP 账号只是【认证发件人】（From，固定为公司账号），
+    收件人 to_email 可以是【任意】邮箱 —— 一个 SMTP 账号可给无数不同用户发信。
+
     Returns:
-        True=成功, False=失败
+        True=成功, False=失败（失败仅记录日志，绝不抛异常打断业务）
     """
     from_addr = settings.SMTP_FROM or settings.SMTP_USER or "noreply@company.com"
 
@@ -38,10 +46,16 @@ async def send_email(
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "html", "utf-8"))
 
-    if attachment_path and os.path.exists(attachment_path):
+    # 附件：优先用字节内容，其次本地文件
+    _fname = attachment_name or "reimbursement.pdf"
+    if attachment_bytes:
+        part = MIMEApplication(attachment_bytes, _subtype="pdf", name=_fname)
+        part.add_header("Content-Disposition", "attachment", filename=_fname)
+        msg.attach(part)
+    elif attachment_path and os.path.exists(attachment_path):
         with open(attachment_path, "rb") as f:
-            part = MIMEApplication(f.read(), _subtype="pdf", name=attachment_name or "reimbursement.pdf")
-            part.add_header("Content-Disposition", "attachment", filename=attachment_name or "reimbursement.pdf")
+            part = MIMEApplication(f.read(), _subtype="pdf", name=_fname)
+            part.add_header("Content-Disposition", "attachment", filename=_fname)
             msg.attach(part)
 
     username = settings.SMTP_USER or None

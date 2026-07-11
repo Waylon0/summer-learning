@@ -589,6 +589,14 @@ async def submit_reimbursement(reimb_id: str = "") -> dict:
     else:
         result["message"] = (result.get("message", "") +
                              " PDF 稍后可在系统「文档中心/进度查询」下载（本次未生成下载地址，请勿编造链接）。")
+
+    # 自动邮件通知：提交成功 → 通知申请人所在部门的部门经理进行一审（附 PDF，后台发送不阻断）
+    try:
+        from app.services.notification_svc import dispatch_reimbursement_notification
+        dispatch_reimbursement_notification(reimb_id, "manager")
+        result["message"] += " 已自动邮件通知部门经理进行一审。"
+    except Exception as e:
+        logger.warning(f"提交后通知部门经理失败（不阻断）: {e}")
     return result
 
 
@@ -771,8 +779,22 @@ async def approve_reimbursement(reimb_id: str, action: str, comment: str = "") -
         except Exception as e:
             logger.error(f"审批失败: {e}")
             return {"success": False, "message": "审批操作失败，请稍后重试。"}
+        # 记录审批后的最新状态（用于判断是否触发二审通知）
+        await db.refresh(reimb)
+        new_status = reimb.status
+
     cn = {"approve": "已通过", "reject": "已驳回", "return": "已退回"}[action]
-    return {"success": True, "reimb_id": reimb_id, "result": cn, "message": f"报销单 {reimb_id} {cn}。"}
+    extra = ""
+    # 一审（部门经理）通过后仍是 pending → 进入二审，自动邮件通知财务（附 PDF，后台发送）
+    if action == "approve" and new_status == "pending":
+        try:
+            from app.services.notification_svc import dispatch_reimbursement_notification
+            dispatch_reimbursement_notification(reimb_id, "finance")
+            extra = " 已自动邮件通知财务进行二审。"
+        except Exception as e:
+            logger.warning(f"一审通过后通知财务失败（不阻断）: {e}")
+    return {"success": True, "reimb_id": reimb_id, "result": cn,
+            "new_status": new_status, "message": f"报销单 {reimb_id} {cn}。{extra}"}
 
 
 @tool

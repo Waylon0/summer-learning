@@ -14,15 +14,15 @@ settings = get_settings()
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 SEED_USERS = [
-    {"username": "admin", "password": "admin123", "name": "系统管理员", "department": "技术部", "role": "admin"},
-    {"username": "zhangsan", "password": "123456", "name": "张三", "department": "技术部", "role": "employee"},
-    {"username": "lisi", "password": "123456", "name": "李四", "department": "研发部", "role": "employee"},
-    {"username": "wangwu", "password": "123456", "name": "王五", "department": "市场部", "role": "employee"},
-    {"username": "manager_wang", "password": "123456", "name": "王经理", "department": "技术部", "role": "manager"},
-    {"username": "manager_li", "password": "123456", "name": "李经理", "department": "研发部", "role": "manager"},
-    {"username": "manager_zhao", "password": "123456", "name": "赵经理", "department": "技术部", "role": "manager"},
-    {"username": "finance_qian", "password": "123456", "name": "钱财务", "department": "财务部", "role": "finance"},
-    {"username": "finance_sun", "password": "123456", "name": "孙财务", "department": "财务部", "role": "finance"},
+    {"username": "admin", "password": "admin123", "name": "系统管理员", "department": "技术部", "role": "admin", "email": "admin@example.com"},
+    {"username": "zhangsan", "password": "123456", "name": "张三", "department": "技术部", "role": "employee", "email": "zhangsan@example.com"},
+    {"username": "lisi", "password": "123456", "name": "李四", "department": "研发部", "role": "employee", "email": "lisi@example.com"},
+    {"username": "wangwu", "password": "123456", "name": "王五", "department": "市场部", "role": "employee", "email": "wangwu@example.com"},
+    {"username": "manager_wang", "password": "123456", "name": "王经理", "department": "技术部", "role": "manager", "email": "manager_wang@example.com"},
+    {"username": "manager_li", "password": "123456", "name": "李经理", "department": "研发部", "role": "manager", "email": "manager_li@example.com"},
+    {"username": "manager_zhao", "password": "123456", "name": "赵经理", "department": "技术部", "role": "manager", "email": "manager_zhao@example.com"},
+    {"username": "finance_qian", "password": "123456", "name": "钱财务", "department": "财务部", "role": "finance", "email": "finance_qian@example.com"},
+    {"username": "finance_sun", "password": "123456", "name": "孙财务", "department": "财务部", "role": "finance", "email": "finance_sun@example.com"},
 ]
 
 SEED_BUDGETS = [
@@ -125,6 +125,7 @@ async def main():
                     name=u["name"],
                     department=u["department"],
                     role=u["role"],
+                    email=u.get("email"),
                 ))
                 print(f"  + user: {u['username']} ({u['role']})")
         await session.commit()

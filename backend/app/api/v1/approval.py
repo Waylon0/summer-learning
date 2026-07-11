@@ -55,6 +55,15 @@ async def submit_approval(
         action.comment,
         approver_role=approver.role,
     )
+    # 一审（部门经理）通过 → 报销单仍为 pending → 进入二审，自动邮件通知财务
+    if action.action == "approve":
+        reimb = await db.get(Reimbursement, action.reimbursement_id)
+        if reimb and reimb.status == "pending":
+            try:
+                from app.services.notification_svc import dispatch_reimbursement_notification
+                dispatch_reimbursement_notification(action.reimbursement_id, "finance")
+            except Exception as e:
+                logger.warning(f"一审通过后通知财务失败（不阻断）: {e}")
     return record.to_dict()
 
 

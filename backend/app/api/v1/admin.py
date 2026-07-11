@@ -23,6 +23,11 @@ class RoleUpdateRequest(BaseModel):
     role: str = Field(..., description="目标角色: employee / manager / finance / admin")
 
 
+class EmailUpdateRequest(BaseModel):
+    """变更用户邮箱请求体"""
+    email: str = Field(..., description="目标邮箱，传空字符串则清空")
+
+
 @router.get("")
 async def list_users(
     db: AsyncSession = Depends(get_db),
@@ -64,6 +69,45 @@ async def update_user_role(
     await db.refresh(user)
 
     logger.info(f"用户角色变更: {user.username} {old_role}→{data.role} by {admin.username}")
+    return user.to_dict()
+
+
+@router.put("/{user_id}/email")
+async def update_user_email(
+    user_id: str,
+    data: EmailUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+):
+    """变更用户邮箱（仅超管）。用于给经理/财务配置真实可收件邮箱，以接收审批通知。
+
+    传空字符串则清空邮箱（该用户将不再接收邮件通知）。
+    """
+    import re
+
+    email = (data.email or "").strip()
+    # 简单邮箱格式校验（允许清空）
+    if email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail=f"邮箱格式不正确: {email}")
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 邮箱唯一性校验（避免多个用户同一邮箱导致通知混乱；清空不校验）
+    if email:
+        dup = await db.scalar(
+            select(User).where(User.email == email, User.id != user_id)
+        )
+        if dup is not None:
+            raise HTTPException(status_code=400, detail=f"该邮箱已被用户 {dup.username} 使用")
+
+    old_email = user.email or "（空）"
+    user.email = email or None
+    await db.commit()
+    await db.refresh(user)
+
+    logger.info(f"用户邮箱变更: {user.username} {old_email}→{email or '（空）'} by {admin.username}")
     return user.to_dict()
 
 
