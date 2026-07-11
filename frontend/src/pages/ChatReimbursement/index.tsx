@@ -48,34 +48,7 @@ function renderMessageContent(text: string) {
     }
     const raw = match[0];
     const url = resolveUrl(raw);
-    const isPdf = /\.pdf(\?|$)/i.test(raw) || /reimburse-attachments/i.test(raw) || /upload\/files/i.test(raw);
-
-    if (isPdf) {
-      parts.push(
-        <span key={match.index} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, margin: '2px 0' }}>
-          <a href={url} target="_blank" rel="noreferrer"
-            style={{
-              display: 'inline-block', padding: '3px 12px',
-              background: '#e6f4ff', border: '1px solid #91caff',
-              borderRadius: 6, color: '#1677ff', fontWeight: 500,
-              fontSize: 13, textDecoration: 'none',
-            }}
-          >
-            📄 点击预览
-          </a>
-          <a href={url} download style={{
-            display: 'inline-block', padding: '3px 12px',
-            background: '#f5f5f5', border: '1px solid #d9d9d9',
-            borderRadius: 6, color: '#555', fontWeight: 500,
-            fontSize: 13, textDecoration: 'none',
-          }}>
-            📥 点击下载
-          </a>
-        </span>,
-      );
-    } else {
-      parts.push(<a key={match.index} href={url} target="_blank" rel="noreferrer">{raw}</a>);
-    }
+    parts.push(<a key={match.index} href={url} target="_blank" rel="noreferrer">{raw}</a>);
     lastIdx = match.index + match[0].length;
   }
   if (lastIdx < text.length) parts.push(text.slice(lastIdx));
@@ -245,6 +218,7 @@ export default function ChatReimbursement() {
     setLiveThinking([]);
 
     const collectedThinking: ThinkingStep[] = [];
+    const collectedPdfUrls: string[] = [];
     let assistantStarted = false;
 
     const ensureAssistant = () => {
@@ -291,18 +265,40 @@ export default function ChatReimbursement() {
               output: event.output,
             });
             setLiveThinking([...collectedThinking]);
+            // 兜底：从 tool_result 中也提取 pdf_download_url，防止独立 pdf 事件未被接收
+            try {
+              const raw = (event as Record<string, unknown>).output;
+              if (typeof raw === 'string') {
+                const parsed = JSON.parse(raw);
+                const u = parsed?.pdf_download_url;
+                if (u && typeof u === 'string' && u.startsWith('/api/v1/upload/files/') && !collectedPdfUrls.includes(u)) {
+                  collectedPdfUrls.push(u);
+                }
+              }
+            } catch { /* ignore */ }
             break;
           }
           case 'message':
             appendContent((event as Record<string, unknown>).content as string || '');
             break;
+          case 'pdf': {
+            const url = (event as Record<string, unknown>).pdf_download_url as string;
+            if (url) collectedPdfUrls.push(url);
+            break;
+          }
           case 'done': {
             const reimbId = (event as Record<string, unknown>).reimb_id as string | undefined;
-            if (reimbId) {
+            if (reimbId || collectedPdfUrls.length > 0) {
               setMessages((prev) => {
                 const msgs = [...prev];
                 const last = msgs[msgs.length - 1];
-                if (last && last.role === 'assistant') msgs[msgs.length - 1] = { ...last, reimb_id: reimbId };
+                if (last && last.role === 'assistant') {
+                  msgs[msgs.length - 1] = {
+                    ...last,
+                    ...(reimbId ? { reimb_id: reimbId } : {}),
+                    ...(collectedPdfUrls.length > 0 ? { pdf_urls: collectedPdfUrls } : {}),
+                  };
+                }
                 return msgs;
               });
             }
@@ -313,12 +309,30 @@ export default function ChatReimbursement() {
             break;
         }
       }
+      // 从思考过程中提取 PDF 下载地址（兜底：不依赖独立的 pdf SSE 事件）
+      for (const step of collectedThinking) {
+        if (step.kind === 'tool_result' && step.output) {
+          try {
+            const parsed = JSON.parse(step.output);
+            const u = parsed?.pdf_download_url;
+            if (u && typeof u === 'string' && u.startsWith('/api/v1/upload/files/') && !collectedPdfUrls.includes(u)) {
+              collectedPdfUrls.push(u);
+            }
+          } catch { /* ignore */ }
+        }
+      }
       // 把思考过程附加到最后一条助手消息
       if (collectedThinking.length > 0) {
         setMessages((prev) => {
           const msgs = [...prev];
           const last = msgs[msgs.length - 1];
-          if (last && last.role === 'assistant') msgs[msgs.length - 1] = { ...last, thinking: collectedThinking };
+          if (last && last.role === 'assistant') {
+            msgs[msgs.length - 1] = {
+              ...last,
+              thinking: collectedThinking,
+              ...(collectedPdfUrls.length > 0 ? { pdf_urls: collectedPdfUrls } : {}),
+            };
+          }
           return msgs;
         });
       }
@@ -395,6 +409,33 @@ export default function ChatReimbursement() {
                 {/* 历史思考过程（折叠） */}
                 {msg.role === 'assistant' && msg.thinking && msg.thinking.length > 0 && (
                   <div style={{ maxWidth: '86%', width: '100%' }}><ThinkingPanel steps={msg.thinking} /></div>
+                )}
+                {/* PDF 下载按钮（结构化 URL，不经过 LLM 文本，永远正确） */}
+                {msg.role === 'assistant' && msg.pdf_urls && msg.pdf_urls.length > 0 && (
+                  <div style={{ maxWidth: '86%', marginTop: 6 }}>
+                    {msg.pdf_urls.map((url, i) => (
+                      <div key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 8, marginBottom: 4 }}>
+                        <a href={resolveUrl(url)} target="_blank" rel="noreferrer"
+                          style={{
+                            display: 'inline-block', padding: '4px 14px',
+                            background: '#e6f4ff', border: '1px solid #91caff',
+                            borderRadius: 6, color: '#1677ff', fontWeight: 500,
+                            fontSize: 13, textDecoration: 'none',
+                          }}
+                        >
+                          预览 PDF
+                        </a>
+                        <a href={resolveUrl(url)} download style={{
+                          display: 'inline-block', padding: '4px 14px',
+                          background: '#f5f5f5', border: '1px solid #d9d9d9',
+                          borderRadius: 6, color: '#555', fontWeight: 500,
+                          fontSize: 13, textDecoration: 'none',
+                        }}>
+                          下载
+                        </a>
+                      </div>
+                    ))}
+                  </div>
                 )}
                 <div style={{
                   maxWidth: '86%',

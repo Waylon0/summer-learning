@@ -36,6 +36,7 @@ export interface ChatMessage {
   entities?: Record<string, unknown>;
   thinking?: ThinkingStep[];
   reimb_id?: string;
+  pdf_urls?: string[];
 }
 
 export interface ChatRequest {

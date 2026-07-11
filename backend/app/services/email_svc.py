@@ -7,6 +7,7 @@ app/services/email_svc.py — 邮件发送服务
 =============================================================================
 """
 import os
+import ssl
 import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -88,23 +89,32 @@ async def send_email(
 
 
 def _build_strategies(username: str, password: str):
-    """构建尝试的 SMTP 连接策略列表"""
-    port = settings.SMTP_PORT or 587
+    """构建尝试的 SMTP 连接策略列表（QQ邮箱兼容）"""
     host = settings.SMTP_HOST
+    port = settings.SMTP_PORT or 465
 
-    # Strategy 1: STARTTLS on specified port
-    yield ("starttls", {
-        "hostname": host, "port": port,
+    # 创建兼容 QQ 邮箱的 SSL 上下文（避免 Unexpected EOF）
+    tls_context = ssl.create_default_context()
+    tls_context.check_hostname = False
+    tls_context.verify_mode = ssl.CERT_NONE
+    # 允许兼容旧版 TLS（QQ 邮箱 SMTP 对 TLS 1.3 支持不完善）
+    tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+    # Strategy 1: SSL 直连（port 465）—— QQ 邮箱最稳定的方式
+    yield ("ssl-465", {
+        "hostname": host, "port": 465,
         "username": username, "password": password,
-        "start_tls": True,
+        "use_tls": True,
+        "tls_context": tls_context,
         "timeout": 15,
     })
 
-    # Strategy 2: SSL on 465 (if port is 587, try 465)
+    # Strategy 2: STARTTLS on 587
     if port == 587:
-        yield ("ssl-465", {
-            "hostname": host, "port": 465,
+        yield ("starttls-587", {
+            "hostname": host, "port": 587,
             "username": username, "password": password,
-            "use_tls": True,
+            "start_tls": True,
+            "tls_context": tls_context,
             "timeout": 15,
         })
