@@ -51,12 +51,14 @@ const pageMap: Record<string, React.ReactNode> = {
 const roleDefaults: Record<string, string> = {
   employee: 'chat',
   manager: 'dashboard',
+  finance: 'approval',
   admin: 'dashboard',
 };
 
 const roleTitles: Record<string, string> = {
   employee: '我的工作台',
   manager: '团队报销管理',
+  finance: '财务管理',
   admin: '管理员控制台',
 };
 
@@ -166,7 +168,7 @@ export default function App() {
             </span>
           </Title>
           <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
-            {user.department} · {({ employee: '员工', manager: '经理', admin: '管理员' })[user.role] || user.role}
+            {user.department} · {({ employee: '员工', manager: '经理', finance: '财务', admin: '管理员' })[user.role] || user.role}
           </Text>
         </div>
         <Menu
@@ -174,7 +176,11 @@ export default function App() {
           mode="inline"
           selectedKeys={[active]}
           onClick={({ key }) => setActive(key)}
-          items={user.role === 'admin' ? [...baseMenuItems, adminMenuItem] : baseMenuItems}
+          items={(() => {
+            if (user.role === 'admin') return [...baseMenuItems, adminMenuItem];
+            if (user.role === 'employee') return baseMenuItems.filter((m) => m.key !== 'approval');
+            return baseMenuItems;
+          })()}
           style={{ background: 'transparent', borderRight: 0, marginTop: 8 }}
         />
       </Sider>

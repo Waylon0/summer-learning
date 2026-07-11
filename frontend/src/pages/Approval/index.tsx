@@ -1,65 +1,125 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Card, Button, Table, Tag, Space, Input, message, Spin, Empty, Row, Col, Descriptions, Popconfirm,
+  Card, Button, Table, Tag, Space, Input, message, Spin, Empty, Row, Col, Descriptions, Popconfirm, Tabs, Steps,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, RollbackOutlined,
-  ReloadOutlined, AuditOutlined,
+  ReloadOutlined, AuditOutlined, DollarOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { getReimbursements, submitApproval } from '@/services/api';
-import type { ReimbursementRecord } from '@/types';
+import { getReimbursements, submitApproval, payReimbursement } from '@/services/api';
+import { useAuthStore } from '@/stores';
+import type { ReimbursementRecord, ApprovalRecord } from '@/types';
 
 const statusMap: Record<string, { color: string; label: string }> = {
+  draft: { color: 'default', label: '草稿' },
   pending: { color: 'processing', label: '待审批' },
   approved: { color: 'success', label: '已通过' },
   rejected: { color: 'error', label: '已驳回' },
   returned: { color: 'warning', label: '已退回' },
-  paid: { color: 'success', label: '已支付' },
+  paid: { color: 'success', label: '已付款' },
+  cancelled: { color: 'default', label: '已撤销' },
 };
 
+const actionLabels: Record<string, string> = {
+  pending: '待审批', approve: '通过', reject: '驳回', return: '退回', pay: '付款', cancelled: '已取消',
+};
+
+function getCurrentStage(approvals: ApprovalRecord[]): string | null {
+  const p = approvals.find((a) => a.action === 'pending');
+  return p ? (p.approver || '') : null;
+}
+
+function canAct(role: string, currentStage: string | null, status: string): boolean {
+  if (status !== 'pending' || !currentStage) return false;
+  if (role === 'admin') return true;
+  if (currentStage === '部门经理' && role === 'manager') return true;
+  if (currentStage === '财务审批' && (role === 'finance')) return true;
+  return false;
+}
+
 export default function Approval() {
+  const { user } = useAuthStore();
+  const userRole = user?.role || 'employee';
+
+  const [activeTab, setActiveTab] = useState<string>('pending');
   const [loading, setLoading] = useState(false);
   const [records, setRecords] = useState<ReimbursementRecord[]>([]);
   const [selected, setSelected] = useState<ReimbursementRecord | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [comment, setComment] = useState('');
+  const selectedIdRef = useRef<string | null>(null);
 
-  const fetchPending = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await getReimbursements({ status: 'pending', limit: 100 });
+      const params: Record<string, unknown> = { limit: 100 };
+      if (activeTab === 'pending') params.status = 'pending';
+      else if (activeTab === 'approved') params.status = 'approved';
+      const list = await getReimbursements(params);
       setRecords(list);
-      if (selected) {
-        const updated = list.find((r) => r.id === selected.id);
-        if (updated) setSelected(updated);
+      // 刷新后同步当前选中记录（用 ref 避免循环依赖）
+      const sid = selectedIdRef.current;
+      if (sid) {
+        const u = list.find((r) => r.id === sid);
+        setSelected(u || null);
+        if (!u) selectedIdRef.current = null;
       }
     } catch {
       message.error('加载报销列表失败');
     }
     setLoading(false);
-  }, [selected]);
+  }, [activeTab]);
 
-  useEffect(() => { fetchPending(); }, [fetchPending]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleAction = async (action: 'approve' | 'reject' | 'return') => {
-    if (!selected) return;
+  const handleSelect = (r: ReimbursementRecord) => {
+    setSelected(r);
+    selectedIdRef.current = r.id;
+  };
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    setSelected(null);
+    selectedIdRef.current = null;
+  };
+
+  const handleApprove = async (action: 'approve' | 'reject' | 'return') => {
+    if (!selected || !user) return;
     setActionLoading(true);
     try {
       await submitApproval({
         reimbursement_id: selected.id,
-        approver: '当前审批人',
+        approver: user.name,
         action,
         comment: comment || undefined,
       });
       message.success(action === 'approve' ? '已通过' : action === 'reject' ? '已驳回' : '已退回');
       setComment('');
-      fetchPending();
+      fetchData();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '操作失败');
     }
     setActionLoading(false);
   };
+
+  const handlePay = async () => {
+    if (!selected) return;
+    setActionLoading(true);
+    try {
+      await payReimbursement({ reimbursement_id: selected.id, comment: comment || undefined });
+      message.success('付款成功');
+      setComment('');
+      fetchData();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '付款失败');
+    }
+    setActionLoading(false);
+  };
+
+  const currentStage = selected ? getCurrentStage(selected.approvals) : null;
+  const iCanAct = selected ? canAct(userRole, currentStage, selected.status) : false;
+  const iCanPay = selected?.status === 'approved' && (userRole === 'finance' || userRole === 'admin');
 
   const columns = [
     { title: '单号', dataIndex: 'id', key: 'id', width: 100, render: (v: string) => v.slice(0, 8) + '...' },
@@ -72,21 +132,15 @@ export default function Approval() {
     },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 80,
-      render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label}</Tag>,
+      render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label || s}</Tag>,
     },
     {
-      title: '等待', dataIndex: 'created_at', key: 'wait_time', width: 90,
-      render: (v: string) => {
-        if (!v) return '-';
-        const hours = dayjs().diff(dayjs(v), 'hour');
-        if (hours < 1) return <span style={{ color: '#52c41a' }}>刚刚</span>;
-        if (hours < 24) return <span>{hours} 小时</span>;
-        const days = Math.floor(hours / 24);
-        return <span style={{ color: hours > 48 ? '#ff4d4f' : undefined, fontWeight: hours > 48 ? 600 : undefined }}>{days} 天</span>;
+      title: '当前阶段', dataIndex: 'approvals', key: 'stage', width: 110,
+      render: (approvals: ApprovalRecord[]) => {
+        if (!approvals?.length) return '-';
+        const stage = getCurrentStage(approvals);
+        return stage ? <Tag color="processing">{stage}</Tag> : <span style={{ color: '#999' }}>-</span>;
       },
-      sorter: (a: ReimbursementRecord, b: ReimbursementRecord) =>
-        (a.created_at ? dayjs(a.created_at).valueOf() : 0) - (b.created_at ? dayjs(b.created_at).valueOf() : 0),
-      defaultSortOrder: 'ascend' as const,
     },
     {
       title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160,
@@ -94,38 +148,35 @@ export default function Approval() {
     },
   ];
 
-  const sortedRecords = [...records].sort((a, b) => {
-    if (a.status === 'pending' && b.status !== 'pending') return -1;
-    if (a.status !== 'pending' && b.status === 'pending') return 1;
-    return (a.created_at ? dayjs(a.created_at).valueOf() : 0) - (b.created_at ? dayjs(b.created_at).valueOf() : 0);
-  });
-
   return (
     <div>
       <Card
-        title={
-          <Space>
-            <AuditOutlined /> 报销审批
-          </Space>
-        }
-        extra={
-          <Button icon={<ReloadOutlined />} onClick={() => fetchPending()} loading={loading}>刷新</Button>
-        }
+        title={<Space><AuditOutlined /> 报销审批</Space>}
+        extra={<Button icon={<ReloadOutlined />} onClick={fetchData} loading={loading}>刷新</Button>}
         style={{ marginBottom: 16 }}
       >
+        <Tabs
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          items={[
+            { key: 'pending', label: '待审批' },
+            { key: 'approved', label: '待付款' },
+            { key: 'all', label: '全部' },
+          ]}
+          style={{ marginTop: -8 }}
+        />
         <Spin spinning={loading}>
           {records.length === 0 ? (
             <Empty description="暂无报销记录" style={{ padding: 40 }} />
           ) : (
             <Table
-              dataSource={sortedRecords}
+              dataSource={records}
               columns={columns}
               rowKey="id"
               size="middle"
               pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 条` }}
-              rowClassName={(r) => r.status === 'pending' ? 'ant-table-row-selected' : ''}
               onRow={(r) => ({
-                onClick: () => setSelected(r),
+                onClick: () => handleSelect(r),
                 style: { cursor: 'pointer' },
               })}
             />
@@ -150,7 +201,7 @@ export default function Approval() {
                   <span style={{ fontWeight: 600, color: '#1677ff', fontSize: 16 }}>¥{selected.total_amount.toLocaleString()}</span>
                 </Descriptions.Item>
                 <Descriptions.Item label="状态">
-                  <Tag color={statusMap[selected.status]?.color}>{statusMap[selected.status]?.label}</Tag>
+                  <Tag color={statusMap[selected.status]?.color}>{statusMap[selected.status]?.label || selected.status}</Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label="发票数">{selected.invoice_count}</Descriptions.Item>
                 <Descriptions.Item label="说明" span={2}>{selected.description || '-'}</Descriptions.Item>
@@ -185,83 +236,92 @@ export default function Approval() {
             </Col>
 
             <Col span={10}>
-              <Card title="审批历史" size="small" style={{ marginBottom: 16 }}>
+              {/* ===== 审批进度 ===== */}
+              <Card title="审批进度" size="small" style={{ marginBottom: 16 }}>
                 {selected.approvals.length === 0 ? (
                   <Empty description="暂无审批记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 ) : (
-                  selected.approvals.map((a, idx) => (
-                    <div key={a.id || idx} style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 6, border: '1px solid #f0f0f0' }}>
-                      <Space>
-                        <strong>{a.approver}</strong>
-                        <Tag color={a.action === 'approve' ? 'success' : a.action === 'reject' ? 'error' : 'warning'}>
-                          {{ approve: '通过', reject: '驳回', return: '退回', pending: '待审批' }[a.action] || a.action}
-                        </Tag>
-                        <span style={{ fontSize: 12, color: '#999' }}>Step {a.step}</span>
-                      </Space>
-                      {a.comment && <div style={{ color: '#666', marginTop: 4, fontSize: 13 }}>{a.comment}</div>}
-                      <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>
-                        {a.acted_at ? dayjs(a.acted_at).format('MM-DD HH:mm') : '-'}
-                      </div>
-                    </div>
-                  ))
+                  <Steps
+                    direction="vertical"
+                    size="small"
+                    current={(() => {
+                      const idx = selected.approvals.findIndex((a) => a.action === 'pending');
+                      return idx >= 0 ? idx : selected.approvals.length;
+                    })()}
+                    items={selected.approvals.filter((a) => a.action !== 'cancelled').map((a) => {
+                      const isPending = a.action === 'pending';
+                      const isApprove = a.action === 'approve';
+                      const isReject = a.action === 'reject' || a.action === 'return';
+                      const isPay = a.action === 'pay';
+                      return {
+                        title: a.approver || `步骤 ${a.step}`,
+                        description: (
+                          <div>
+                            <Tag color={isPending ? 'processing' : isApprove ? 'success' : isReject ? 'error' : isPay ? 'blue' : 'default'}>
+                              {actionLabels[a.action] || a.action}
+                            </Tag>
+                            {a.comment && <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>{a.comment}</div>}
+                            {a.acted_at && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{dayjs(a.acted_at).format('MM-DD HH:mm')}</div>}
+                          </div>
+                        ),
+                        status: isPending ? 'process' : isReject ? 'error' : 'finish',
+                      } as never;
+                    })}
+                  />
                 )}
               </Card>
 
-              <Card title="审批操作" size="small">
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  <Input.TextArea
-                    placeholder="审批意见（可选）"
-                    value={comment}
-                    onChange={(e) => setComment(e.target.value)}
-                    rows={3}
-                  />
-                  <Space style={{ marginTop: 8 }}>
-                    <Popconfirm
-                      title="确认通过此报销申请？"
-                      onConfirm={() => handleAction('approve')}
-                      okText="确认通过"
-                      cancelText="取消"
-                    >
-                      <Button
-                        type="primary"
-                        icon={<CheckCircleOutlined />}
-                        loading={actionLoading}
-                        disabled={selected.status !== 'pending'}
-                      >
-                        通过
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title="确认退回此报销申请？"
-                      onConfirm={() => handleAction('return')}
-                      okText="确认退回"
-                      cancelText="取消"
-                    >
-                      <Button
-                        icon={<RollbackOutlined />}
-                        loading={actionLoading}
-                        disabled={selected.status !== 'pending'}
-                      >
-                        退回
-                      </Button>
-                    </Popconfirm>
-                    <Popconfirm
-                      title="确认驳回此报销申请？"
-                      onConfirm={() => handleAction('reject')}
-                      okText="确认驳回"
-                      cancelText="取消"
-                    >
-                      <Button
-                        danger
-                        icon={<CloseCircleOutlined />}
-                        loading={actionLoading}
-                        disabled={selected.status !== 'pending'}
-                      >
-                        驳回
-                      </Button>
+              {/* ===== 审批操作 / 付款操作 ===== */}
+              <Card title="操作" size="small">
+                {selected.status === 'paid' ? (
+                  <Tag icon={<CheckCircleOutlined />} color="success" style={{ padding: '4px 16px', fontSize: 14 }}>已完成付款</Tag>
+                ) : selected.status === 'rejected' ? (
+                  <Tag color="error" style={{ padding: '4px 16px', fontSize: 14 }}>已驳回</Tag>
+                ) : selected.status === 'returned' ? (
+                  <Tag color="warning" style={{ padding: '4px 16px', fontSize: 14 }}>已退回，等待申请人修改后重新提交</Tag>
+                ) : selected.status === 'cancelled' ? (
+                  <Tag color="default" style={{ padding: '4px 16px', fontSize: 14 }}>已撤销</Tag>
+                ) : iCanAct ? (
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <Tag color="processing">当前阶段：{currentStage}</Tag>
+                    </div>
+                    <Input.TextArea
+                      placeholder="审批意见（可选）"
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                      rows={3}
+                    />
+                    <Space style={{ marginTop: 8 }}>
+                      <Popconfirm title="确认通过？" onConfirm={() => handleApprove('approve')} okText="确认" cancelText="取消">
+                        <Button type="primary" icon={<CheckCircleOutlined />} loading={actionLoading}>通过</Button>
+                      </Popconfirm>
+                      <Popconfirm title="确认退回？" onConfirm={() => handleApprove('return')} okText="确认" cancelText="取消">
+                        <Button icon={<RollbackOutlined />} loading={actionLoading}>退回</Button>
+                      </Popconfirm>
+                      <Popconfirm title="确认驳回？" onConfirm={() => handleApprove('reject')} okText="确认" cancelText="取消">
+                        <Button danger icon={<CloseCircleOutlined />} loading={actionLoading}>驳回</Button>
+                      </Popconfirm>
+                    </Space>
+                  </Space>
+                ) : iCanPay ? (
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <Tag color="success">两阶段审批已通过，待付款</Tag>
+                    <Input.TextArea
+                      placeholder="付款备注（可选）"
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                      rows={3}
+                    />
+                    <Popconfirm title="确认付款？" onConfirm={handlePay} okText="确认" cancelText="取消">
+                      <Button type="primary" icon={<DollarOutlined />} loading={actionLoading}>出纳付款</Button>
                     </Popconfirm>
                   </Space>
-                </Space>
+                ) : selected.status === 'pending' ? (
+                  <span style={{ color: '#999' }}>等待 {currentStage || '-'} 审批</span>
+                ) : (
+                  <span style={{ color: '#999' }}>-</span>
+                )}
               </Card>
             </Col>
           </Row>

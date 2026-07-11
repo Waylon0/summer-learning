@@ -7,12 +7,14 @@ import type { UserInfo } from '@/types';
 const roleMap: Record<string, { color: string; label: string }> = {
   employee: { color: 'default', label: '员工' },
   manager: { color: 'blue', label: '部门经理' },
+  finance: { color: 'green', label: '财务' },
   admin: { color: 'red', label: '超级管理员' },
 };
 
 const roleOptions = [
   { value: 'employee', label: '员工' },
   { value: 'manager', label: '部门经理' },
+  { value: 'finance', label: '财务' },
   { value: 'admin', label: '超级管理员' },
 ];
 

@@ -5,6 +5,7 @@ import type {
   BudgetInfo,
   UploadResult,
   ApprovalRequest,
+  PaymentRequest,
   ApprovalRecord,
   HealthStatus,
   ApiError,
@@ -204,6 +205,11 @@ export async function uploadInvoice(file: File): Promise<UploadResult> {
 
 export async function submitApproval(data: ApprovalRequest): Promise<ApprovalRecord> {
   const res = await api.post<ApprovalRecord>('/approval', data);
+  return res.data;
+}
+
+export async function payReimbursement(data: PaymentRequest): Promise<ApprovalRecord> {
+  const res = await api.post<ApprovalRecord>('/approval/pay', data);
   return res.data;
 }
 

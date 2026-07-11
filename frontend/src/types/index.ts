@@ -128,7 +128,7 @@ export interface ReimbursementRecord {
   invoice_count: number;
   need_special_approval: boolean;
   budget_remaining_after?: number;
-  status: 'pending' | 'approved' | 'rejected' | 'returned' | 'paid';
+  status: 'draft' | 'pending' | 'approved' | 'rejected' | 'returned' | 'paid' | 'cancelled';
   created_at?: string;
   updated_at?: string;
   invoices: InvoiceInfo[];
@@ -140,7 +140,7 @@ export interface ApprovalRecord {
   reimbursement_id: string;
   approver: string;
   step: number;
-  action: 'approve' | 'reject' | 'return';
+  action: 'pending' | 'approve' | 'reject' | 'return' | 'pay' | 'cancelled';
   comment?: string;
   acted_at?: string;
 }
@@ -175,6 +175,11 @@ export interface ApprovalRequest {
   comment?: string;
 }
 
+export interface PaymentRequest {
+  reimbursement_id: string;
+  comment?: string;
+}
+
 // ---------- 用户认证 ----------
 
 export interface LoginRequest {
@@ -203,7 +208,7 @@ export interface UserInfo {
   name: string;
   email?: string;
   department: string;
-  role: 'employee' | 'manager' | 'admin';
+  role: 'employee' | 'manager' | 'finance' | 'admin';
   is_active: boolean;
   created_at?: string;
 }
