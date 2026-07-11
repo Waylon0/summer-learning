@@ -269,11 +269,17 @@ async def start_reimbursement_draft(
 ) -> dict:
     """创建一张【报销单草稿】，作为后续逐条添加费用明细的容器。
     差旅报销请尽量填 trip_destination（目的地）、trip_start_date/trip_end_date（YYYY-MM-DD 出差起止日）。
-    一次完整的出差/事项只需创建一张草稿，然后多次调用 add_expense_item 往里加明细。
+    一次完整的出差/事项对应【一张】草稿，然后多次调用 add_expense_item 往里加明细。
 
-    防重复：若用户已有一张进行中的草稿，默认【继续使用该草稿】而不是新建，避免重复建单；
-    只有当用户明确要为另一件事新开报销单时，才传 force_new=True 强制新建。
-    返回草稿 reimb_id 及当前状态。"""
+    草稿隔离规则（重要，防止把两件事的报销混到一张单里）：
+      - 若用户【没有】未提交草稿，或仅有一张【空】草稿（0 条明细）→ 直接创建/复用，返回其 reimb_id。
+      - 若用户已有一张【含明细】的未提交草稿，且 force_new 未设 → 【不自动复用也不自动新建】，
+        而是返回 needs_confirmation=True 与该草稿摘要；你必须先【询问用户】：
+        "继续完善这张旧草稿，还是新建一张？"
+          · 用户要继续 → 用返回的 existing_reimb_id 继续 add_expense_item；
+          · 用户要新建 → 再次调用本工具并传 force_new=True。
+    返回草稿 reimb_id 及当前状态。后续该报销单的所有明细/发票/预览/提交，
+    都要使用【同一个 reimb_id】，不要与其他草稿混用。"""
     from app.core.database import AsyncSessionLocal
     from app.services.expense_sheet_svc import ExpenseSheetService
 
@@ -282,17 +288,27 @@ async def start_reimbursement_draft(
         return {"success": False, "message": "您尚未登录，无法创建报销单。"}
     async with AsyncSessionLocal() as db:
         svc = ExpenseSheetService(db)
-        # 防重复建单：已有进行中草稿则复用（除非强制新建）
         if not force_new:
             existing = await svc.find_active_draft(c["user_id"])
             if existing is not None:
                 sheet = _fmt_sheet(existing)
+                item_count = sheet["item_count"]
+                if item_count == 0:
+                    # 空草稿：直接复用，避免产生重复空单（不打扰用户）
+                    return {
+                        "success": True, "existing": True, "reimb_id": existing.id,
+                        "needs_confirmation": False, "sheet": sheet,
+                        "message": "已有一张空白草稿，继续为您使用它，请逐条添加费用明细。",
+                    }
+                # 含明细的旧草稿：必须让用户决定，绝不自动合并到旧单
                 return {
-                    "success": True, "existing": True, "sheet": sheet,
+                    "success": True, "existing": True, "needs_confirmation": True,
+                    "existing_reimb_id": existing.id, "sheet": sheet,
                     "message": (
-                        f"检测到您已有一张进行中的报销单草稿（reimb_id={existing.id}，"
-                        f"共{sheet['item_count']}条明细），已为您继续使用。"
-                        "如果这是另一件事项的报销，请说明，我再为您新建。"
+                        f"您还有一张【未提交】的报销单草稿（reimb_id={existing.id}，标题「{sheet['title'] or '未命名'}」，"
+                        f"已含 {item_count} 条明细、合计 ¥{sheet['total_amount']:,.2f}）。\n"
+                        f"请问您是要【继续完善这张旧草稿】，还是【新建一张报销单】？\n"
+                        f"（继续→我在这张上加；新建→我另开一张，两张互不影响。请勿把不同事项混在一张单里。）"
                     ),
                 }
         reimb = await svc.create_draft(
@@ -303,8 +319,52 @@ async def start_reimbursement_draft(
             trip_end_date=trip_end_date, description=description,
         )
         sheet = _fmt_sheet(reimb)
-    return {"success": True, "existing": False, "sheet": sheet,
-            "message": "已创建报销单草稿，请逐条添加费用明细（交通/住宿/餐饮等）。"}
+    return {"success": True, "existing": False, "needs_confirmation": False,
+            "reimb_id": sheet["reimb_id"], "sheet": sheet,
+            "message": f"已创建新的报销单草稿（reimb_id={sheet['reimb_id']}），"
+                       f"请逐条添加费用明细（交通/住宿/餐饮等）。后续都用这个 reimb_id 操作本单。"}
+
+
+@tool
+async def list_my_drafts() -> dict:
+    """列出当前用户【所有未提交的报销单草稿】（各自 reimb_id、标题、明细数、金额）。
+    当用户有多张草稿、需要选择在哪一张上继续操作，或想确认草稿彼此隔离时调用。
+    用于避免把不同事项的费用混到同一张单里。"""
+    from app.core.database import AsyncSessionLocal
+    from app.models.reimbursement import Reimbursement
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    c = _ctx()
+    uid = c.get("user_id", "")
+    if not uid:
+        return {"success": False, "message": "您尚未登录。"}
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(Reimbursement)
+            .options(selectinload(Reimbursement.items))
+            .where(Reimbursement.user_id == uid, Reimbursement.status == "draft")
+            .order_by(Reimbursement.updated_at.desc())
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        drafts = [{
+            "reimb_id": r.id,
+            "title": r.title or "未命名",
+            "expense_type": r.expense_type,
+            "item_count": len(r.items or []),
+            "total_amount": float(r.total_amount or 0),
+            "trip_destination": r.trip_destination or "",
+            "updated_at": r.updated_at.isoformat() if r.updated_at else "",
+        } for r in rows]
+    return {
+        "success": True, "count": len(drafts), "drafts": drafts,
+        "message": (
+            f"您有 {len(drafts)} 张未提交的草稿，请让用户确认在哪一张上继续，或新建一张。"
+            if len(drafts) > 1 else
+            (f"您有 1 张未提交的草稿（reimb_id={drafts[0]['reimb_id']}）。" if drafts
+             else "您当前没有未提交的草稿。")
+        ),
+    }
 
 
 @tool
@@ -829,6 +889,7 @@ AGENT_TOOLS = [
     query_reimbursements,
     ocr_uploaded_invoices,
     start_reimbursement_draft,
+    list_my_drafts,
     add_expense_item,
     update_expense_item,
     remove_expense_item,
