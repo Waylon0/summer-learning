@@ -318,6 +318,9 @@ export interface EmailSendResponse {
   sent: boolean;
   message: string;
   reimb_id?: string;
+  sent_count?: number;
+  recipients?: string[];
+  stage?: string;
 }
 
 // ---------- 流程演示 ----------

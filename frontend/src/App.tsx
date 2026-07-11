@@ -18,7 +18,6 @@ import Dashboard from './pages/Dashboard';
 import StatusQuery from './pages/StatusQuery';
 import Approval from './pages/Approval';
 import UserManagement from './pages/UserManagement';
-import InvoiceLedger from './pages/InvoiceLedger';
 import DocumentCenter from './pages/DocumentCenter';
 import AuthPage from './pages/Auth';
 import { healthCheck } from './services/api';
@@ -32,21 +31,10 @@ const baseMenuItems = [
   { key: 'dashboard', icon: <DashboardOutlined />, label: '报销看板' },
   { key: 'approval', icon: <AuditOutlined />, label: '报销审批' },
   { key: 'status', icon: <SearchOutlined />, label: '进度查询' },
-  { key: 'invoices', icon: <FileTextOutlined />, label: '发票台账' },
   { key: 'documents', icon: <ContainerOutlined />, label: '单据中心' },
 ];
 
 const adminMenuItem = { key: 'users', icon: <TeamOutlined />, label: '用户管理' };
-
-const pageMap: Record<string, React.ReactNode> = {
-  chat: <ChatReimbursement />,
-  dashboard: <Dashboard />,
-  approval: <Approval />,
-  status: <StatusQuery />,
-  invoices: <InvoiceLedger />,
-  documents: <DocumentCenter />,
-  users: <UserManagement />,
-};
 
 const roleDefaults: Record<string, string> = {
   employee: 'dashboard',
@@ -235,7 +223,13 @@ export default function App() {
         >
           <div key={active} style={{ animation: 'fadeIn 0.25s ease-in' }}>
             <style>{'@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }'}</style>
-            {pageMap[active]}
+            {active === 'chat' ? <ChatReimbursement /> :
+             active === 'dashboard' ? <Dashboard /> :
+             active === 'approval' ? <Approval /> :
+             active === 'status' ? <StatusQuery /> :
+             active === 'documents' ? <DocumentCenter /> :
+             active === 'users' ? <UserManagement /> :
+             <Dashboard />}
           </div>
         </Content>
       </Layout>

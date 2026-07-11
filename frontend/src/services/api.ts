@@ -293,7 +293,9 @@ export async function generateReimbPdf(id: string): Promise<PdfGenerateResponse>
   return res.data;
 }
 
-export async function sendReimbEmail(id: string): Promise<EmailSendResponse> {
-  const res = await api.post<EmailSendResponse>(`/reimbursements/${id}/send-email`);
+export async function sendReimbEmail(id: string, stage?: string): Promise<EmailSendResponse> {
+  const res = await api.post<EmailSendResponse>(`/email/notify/${id}`, null, {
+    params: { stage: stage || 'manager' },
+  });
   return res.data;
 }

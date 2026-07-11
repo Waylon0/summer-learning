@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef } from 'react';
-import { Card, Row, Col, Statistic, Progress, Table, Skeleton, Space } from 'antd';
-import { WalletOutlined, RiseOutlined, FallOutlined, TrophyOutlined, FileTextOutlined } from '@ant-design/icons';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Card, Row, Col, Statistic, Progress, Table, Skeleton, Space, Button } from 'antd';
+import { WalletOutlined, RiseOutlined, FallOutlined, TrophyOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Chart } from '@antv/g2';
 import { getAllBudgets, getTrend, getPersonalStats } from '@/services/api';
 import type { BudgetInfo, TrendResponse, PersonalStatsResponse } from '@/types';
@@ -19,15 +19,20 @@ export default function Dashboard() {
   const barChartRef = useRef<Chart | null>(null);
   const trendChartRef = useRef<Chart | null>(null);
 
-  useEffect(() => {
-    Promise.all([
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const [b, t, p] = await Promise.all([
       getAllBudgets(),
       getTrend({ months: 6 }),
       getPersonalStats(),
-    ])
-      .then(([b, t, p]) => { setBudgets(b); setTrend(t); setPersonal(p); })
-      .finally(() => setLoading(false));
+    ]);
+    setBudgets(b);
+    setTrend(t);
+    setPersonal(p);
+    setLoading(false);
   }, []);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   useEffect(() => {
     if (budgets.length === 0) return;
@@ -170,6 +175,9 @@ export default function Dashboard() {
 
   return (
     <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <Button icon={<ReloadOutlined />} onClick={fetchData} loading={loading}>刷新数据</Button>
+      </div>
       <Row gutter={16} style={{ marginBottom: 24 }} align="stretch">
         <Col span={6}>
           <Card style={{ height: '100%' }}>

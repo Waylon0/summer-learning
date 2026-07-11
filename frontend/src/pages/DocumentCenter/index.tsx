@@ -68,12 +68,15 @@ export default function DocumentCenter() {
     if (!selected) return;
     setEmailSending(true);
     try {
-      const res = await sendReimbEmail(selected.id);
-      if (res.sent) {
+      let stage: string = 'manager';
+      const pending = selected.approvals?.find((a) => a.action === 'pending');
+      if (pending?.approver === '财务审批') stage = 'finance';
+      const res = await sendReimbEmail(selected.id, stage);
+      if (res.sent_count && res.sent_count > 0) {
         setEmailSent(true);
-        message.success(res.message || '邮件已发送');
+        message.success(res.message || `已向 ${res.sent_count} 位收件人发送通知`);
       } else {
-        message.warning(res.message || '邮件发送失败，请检查 SMTP 配置');
+        message.warning(res.message || '未找到有效收件邮箱，请先为用户配置邮箱');
       }
     } catch {
       message.error('邮件发送失败，请稍后重试');

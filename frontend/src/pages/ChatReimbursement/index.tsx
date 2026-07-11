@@ -87,7 +87,7 @@ function ThinkingPanel({ steps, live }: { steps: ThinkingStep[]; live?: boolean 
   return (
     <Collapse
       ghost
-      defaultActiveKey={live ? ['t'] : []}
+      defaultActiveKey={[]}
       style={{ marginTop: 6, background: '#f7f9fc', borderRadius: 8 }}
       items={[{
         key: 't',
@@ -207,13 +207,13 @@ export default function ChatReimbursement() {
   const handleSendEmailFromChat = async (reimbId: string) => {
     setEmailStatus((prev) => ({ ...prev, [reimbId]: 'loading' }));
     try {
-      const res = await sendReimbEmail(reimbId);
-      if (res.sent) {
+      const res = await sendReimbEmail(reimbId, 'manager');
+      if (res.sent_count && res.sent_count > 0) {
         setEmailStatus((prev) => ({ ...prev, [reimbId]: 'sent' }));
         message.success(res.message || '邮件已发送');
       } else {
         setEmailStatus((prev) => ({ ...prev, [reimbId]: 'error' }));
-        message.warning(res.message || '邮件发送失败');
+        message.warning(res.message || '未找到有效收件邮箱');
       }
     } catch {
       setEmailStatus((prev) => ({ ...prev, [reimbId]: 'error' }));
