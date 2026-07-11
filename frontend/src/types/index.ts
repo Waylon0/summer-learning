@@ -156,6 +156,93 @@ export interface BudgetInfo {
   remaining: number;
   fiscal_year: number;
   usage_rate: number;
+  status?: string;
+  note?: string;
+  updated_at?: string;
+}
+
+export interface BudgetCreateRequest {
+  department: string;
+  annual_budget: number;
+  fiscal_year?: number;
+  note?: string;
+}
+
+export interface BudgetAdjustRequest {
+  delta?: number;
+  new_annual_budget?: number;
+  reason: string;
+  force?: boolean;
+}
+
+export interface BudgetCorrectionRequest {
+  delta_used: number;
+  reason: string;
+}
+
+export interface BudgetTransferRequest {
+  from_dept: string;
+  to_dept: string;
+  amount: number;
+  reason: string;
+}
+
+export interface BudgetAdjustmentRecord {
+  id: string;
+  department: string;
+  fiscal_year: number;
+  change_type: string;
+  delta_annual: number;
+  delta_used: number;
+  before_annual: number;
+  after_annual: number;
+  operator: string;
+  operator_role: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface BudgetAdjustmentRecord {
+  id: string;
+  department: string;
+  fiscal_year: number;
+  change_type: string;
+  delta_annual: number;
+  delta_used: number;
+  before_annual: number;
+  after_annual: number;
+  operator: string;
+  operator_role: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface BudgetMutationResponse {
+  budget: BudgetInfo;
+  adjustment: BudgetAdjustmentRecord;
+}
+
+export interface BudgetTransferResponse {
+  from_budget: BudgetInfo;
+  to_budget: BudgetInfo;
+  adjustments: BudgetAdjustmentRecord[];
+}
+
+export interface BudgetConsumptionItem {
+  id: string;
+  user_name: string;
+  expense_type: string;
+  title?: string;
+  total_amount: number;
+  status: string;
+  created_at?: string;
+}
+
+export interface BudgetConsumptionResponse {
+  department: string;
+  committed_total: number;
+  count: number;
+  reimbursements: BudgetConsumptionItem[];
 }
 
 // ---------- 文件上传 ----------
@@ -322,6 +409,61 @@ export interface EmailSendResponse {
   sent_count?: number;
   recipients?: string[];
   stage?: string;
+}
+
+// ---------- 知识库管理 ----------
+
+export interface KnowledgeDocItem {
+  doc_key: string;
+  title: string;
+  bytes: number;
+  updated_at: string;
+  chunks: number;
+  active: boolean;
+}
+
+export interface KnowledgeDocContent {
+  doc_key: string;
+  title: string;
+  content: string;
+  bytes: number;
+  chunks: number;
+  updated_at: string;
+  active: boolean;
+}
+
+export interface KnowledgeDocSaveRequest {
+  content: string;
+  reason?: string;
+  reindex?: boolean;
+}
+
+export interface KnowledgeDocCreateRequest {
+  doc_key: string;
+  content: string;
+  reason?: string;
+  reindex?: boolean;
+}
+
+export interface KnowledgeSaveResponse {
+  doc_key: string;
+  active: boolean;
+  reindexed: boolean;
+  reindex_message: string;
+  index_chunks_total: number;
+}
+
+export interface KnowledgeStatus {
+  index_available: boolean;
+  embedding_backend: string;
+  index_chunks_total: number;
+  files: { doc_key: string; md5: string; chunks: number; last_built: string }[];
+}
+
+export interface KnowledgeSearchResult {
+  query: string;
+  count: number;
+  hits: { doc_key: string; content: string; score: number }[];
 }
 
 // ---------- 流程演示 ----------

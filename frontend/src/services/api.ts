@@ -3,6 +3,15 @@ import type {
   ChatRequest, ChatResponse,
   ReimbursementRecord,
   BudgetInfo,
+  BudgetCreateRequest,
+  BudgetAdjustRequest,
+  BudgetCorrectionRequest,
+  BudgetTransferRequest,
+  BudgetAdjustmentRecord,
+  BudgetConsumptionItem,
+  BudgetConsumptionResponse,
+  BudgetMutationResponse,
+  BudgetTransferResponse,
   UploadResult,
   ApprovalRequest,
   PaymentRequest,
@@ -25,6 +34,13 @@ import type {
   EmailSendResponse,
   ConversationSummary,
   ConversationDetail,
+  KnowledgeDocItem,
+  KnowledgeDocContent,
+  KnowledgeDocSaveRequest,
+  KnowledgeDocCreateRequest,
+  KnowledgeSaveResponse,
+  KnowledgeStatus,
+  KnowledgeSearchResult,
 } from '@/types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -190,6 +206,36 @@ export async function getAllBudgets(): Promise<BudgetInfo[]> {
   return res.data;
 }
 
+export async function createBudget(data: BudgetCreateRequest): Promise<BudgetMutationResponse> {
+  const res = await api.post<BudgetMutationResponse>('/budget', data);
+  return res.data;
+}
+
+export async function adjustBudget(dept: string, data: BudgetAdjustRequest): Promise<BudgetMutationResponse> {
+  const res = await api.patch<BudgetMutationResponse>(`/budget/${encodeURIComponent(dept)}`, data);
+  return res.data;
+}
+
+export async function correctBudget(dept: string, data: BudgetCorrectionRequest): Promise<BudgetMutationResponse> {
+  const res = await api.post<BudgetMutationResponse>(`/budget/${encodeURIComponent(dept)}/correction`, data);
+  return res.data;
+}
+
+export async function transferBudget(data: BudgetTransferRequest): Promise<BudgetTransferResponse> {
+  const res = await api.post<BudgetTransferResponse>('/budget/transfer', data);
+  return res.data;
+}
+
+export async function getBudgetAdjustments(dept: string): Promise<BudgetAdjustmentRecord[]> {
+  const res = await api.get<BudgetAdjustmentRecord[]>(`/budget/${encodeURIComponent(dept)}/adjustments`);
+  return res.data;
+}
+
+export async function getBudgetConsumption(dept: string): Promise<BudgetConsumptionResponse> {
+  const res = await api.get<BudgetConsumptionResponse>(`/budget/${encodeURIComponent(dept)}/consumption`);
+  return res.data;
+}
+
 // ========== 文件上传 ==========
 
 export async function uploadInvoice(file: File): Promise<UploadResult> {
@@ -297,5 +343,52 @@ export async function sendReimbEmail(id: string, stage?: string): Promise<EmailS
   const res = await api.post<EmailSendResponse>(`/email/notify/${id}`, null, {
     params: { stage: stage || 'manager' },
   });
+  return res.data;
+}
+
+// ========== 知识库管理 ==========
+
+export async function getKnowledgeDocs(): Promise<KnowledgeDocItem[]> {
+  const res = await api.get<KnowledgeDocItem[]>('/knowledge/docs');
+  return res.data;
+}
+
+export async function getKnowledgeDoc(docKey: string): Promise<KnowledgeDocContent> {
+  const res = await api.get<KnowledgeDocContent>(`/knowledge/docs/${encodeURIComponent(docKey)}`);
+  return res.data;
+}
+
+export async function saveKnowledgeDoc(docKey: string, data: KnowledgeDocSaveRequest): Promise<KnowledgeSaveResponse> {
+  const res = await api.put<KnowledgeSaveResponse>(`/knowledge/docs/${encodeURIComponent(docKey)}`, data);
+  return res.data;
+}
+
+export async function createKnowledgeDoc(data: KnowledgeDocCreateRequest): Promise<KnowledgeSaveResponse> {
+  const res = await api.post<KnowledgeSaveResponse>('/knowledge/docs', data);
+  return res.data;
+}
+
+export async function disableKnowledgeDoc(docKey: string, reason?: string, reindex?: boolean): Promise<KnowledgeSaveResponse> {
+  const res = await api.post<KnowledgeSaveResponse>(`/knowledge/docs/${encodeURIComponent(docKey)}/disable`, { reason, reindex });
+  return res.data;
+}
+
+export async function enableKnowledgeDoc(docKey: string, reason?: string, reindex?: boolean): Promise<KnowledgeSaveResponse> {
+  const res = await api.post<KnowledgeSaveResponse>(`/knowledge/docs/${encodeURIComponent(docKey)}/enable`, { reason, reindex });
+  return res.data;
+}
+
+export async function reindexKnowledge(reason?: string): Promise<{ reindexed: boolean; reindex_message: string; index_chunks_total: number }> {
+  const res = await api.post<{ reindexed: boolean; reindex_message: string; index_chunks_total: number }>('/knowledge/reindex', { reason });
+  return res.data;
+}
+
+export async function getKnowledgeStatus(): Promise<KnowledgeStatus> {
+  const res = await api.get<KnowledgeStatus>('/knowledge/status');
+  return res.data;
+}
+
+export async function searchKnowledge(query: string, topK?: number): Promise<KnowledgeSearchResult> {
+  const res = await api.post<KnowledgeSearchResult>('/knowledge/search', { query, top_k: topK ?? 3 });
   return res.data;
 }

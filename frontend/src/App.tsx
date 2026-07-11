@@ -12,6 +12,8 @@ import {
   ContainerOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  FundOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import ChatReimbursement from './pages/ChatReimbursement';
 import Dashboard from './pages/Dashboard';
@@ -19,6 +21,8 @@ import StatusQuery from './pages/StatusQuery';
 import Approval from './pages/Approval';
 import UserManagement from './pages/UserManagement';
 import DocumentCenter from './pages/DocumentCenter';
+import BudgetAdmin from './pages/BudgetAdmin';
+import KnowledgeAdmin from './pages/KnowledgeAdmin';
 import AuthPage from './pages/Auth';
 import { healthCheck } from './services/api';
 import { useAuthStore } from './stores';
@@ -32,6 +36,8 @@ const baseMenuItems = [
   { key: 'approval', icon: <AuditOutlined />, label: '报销审批' },
   { key: 'status', icon: <SearchOutlined />, label: '进度查询' },
   { key: 'documents', icon: <ContainerOutlined />, label: '单据中心' },
+  { key: 'budget', icon: <FundOutlined />, label: '预算管理' },
+  { key: 'knowledge', icon: <BookOutlined />, label: '知识库管理' },
 ];
 
 const adminMenuItem = { key: 'users', icon: <TeamOutlined />, label: '用户管理' };
@@ -169,7 +175,7 @@ export default function App() {
           mode="inline"
           selectedKeys={[active]}
           onClick={({ key }) => setActive(key)}
-          items={user.role === 'admin' ? [...baseMenuItems, adminMenuItem] : user.role === 'employee' ? baseMenuItems.filter((item) => item.key !== 'approval') : baseMenuItems}
+          items={user.role === 'admin' ? [...baseMenuItems, adminMenuItem] : user.role === 'employee' ? baseMenuItems.filter((item) => !['approval', 'budget', 'knowledge'].includes(item.key)) : user.role === 'manager' ? baseMenuItems.filter((item) => !['budget', 'knowledge'].includes(item.key)) : baseMenuItems}
           style={{ background: 'transparent', borderRight: 0, marginTop: 8 }}
         />
       </Sider>
@@ -228,6 +234,8 @@ export default function App() {
              active === 'approval' ? <Approval /> :
              active === 'status' ? <StatusQuery /> :
              active === 'documents' ? <DocumentCenter /> :
+             active === 'budget' ? <BudgetAdmin /> :
+             active === 'knowledge' ? <KnowledgeAdmin /> :
              active === 'users' ? <UserManagement /> :
              <Dashboard />}
           </div>
