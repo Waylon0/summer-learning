@@ -4,8 +4,7 @@ import { SearchOutlined, ReloadOutlined, FileTextOutlined, PlusOutlined, EyeOutl
 import dayjs from 'dayjs';
 import { getInvoices, generateInvoice } from '@/services/api';
 import type { InvoiceRecord, InvoiceGenerateRequest, InvoiceGenerateResponse } from '@/types';
-
-const expenseTypeLabels: Record<string, string> = { travel: '差旅', entertainment: '招待', office: '办公', other: '其他' };
+import { EXPENSE_TYPE } from '@/constants';
 
 function resolveDownloadUrl(url: string): string {
   if (url.startsWith('http')) return url;
@@ -63,7 +62,7 @@ export default function InvoiceLedger() {
     { title: '开票日期', dataIndex: 'invoice_date', key: 'invoice_date', width: 110, render: (v: string) => v || '-' },
     {
       title: '费用类型', dataIndex: 'expense_type', key: 'expense_type', width: 80,
-      render: (v: string) => <Tag>{expenseTypeLabels[v] || v || '-'}</Tag>,
+      render: (v: string) => <Tag>{EXPENSE_TYPE[v] || v || '-'}</Tag>,
     },
     { title: '销售方', dataIndex: 'seller_name', key: 'seller_name', width: 180, ellipsis: true, render: (v: string) => v || '-' },
     {
@@ -82,7 +81,7 @@ export default function InvoiceLedger() {
             <Select
               placeholder="费用类型" allowClear style={{ width: 100 }}
               onChange={(v) => setFilters((f) => ({ ...f, expense_type: v || '' }))}
-              options={Object.entries(expenseTypeLabels).map(([k, v]) => ({ value: k, label: v }))}
+              options={Object.entries(EXPENSE_TYPE).map(([k, v]) => ({ value: k, label: v }))}
             />
           </Col>
           <Col>
@@ -180,7 +179,7 @@ export default function InvoiceLedger() {
               <span style={{ fontWeight: 600, color: '#1677ff' }}>¥{detail.amount?.toLocaleString()}</span>
             </Descriptions.Item>
             <Descriptions.Item label="开票日期">{detail.invoice_date || '-'}</Descriptions.Item>
-            <Descriptions.Item label="费用类型"><Tag>{expenseTypeLabels[detail.expense_type] || detail.expense_type}</Tag></Descriptions.Item>
+            <Descriptions.Item label="费用类型"><Tag>{EXPENSE_TYPE[detail.expense_type] || detail.expense_type}</Tag></Descriptions.Item>
             <Descriptions.Item label="销售方">{detail.seller_name || '-'}</Descriptions.Item>
             <Descriptions.Item label="购买方">{detail.buyer_name || '-'}</Descriptions.Item>
             <Descriptions.Item label="关联报销单">

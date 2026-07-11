@@ -10,20 +10,8 @@ import dayjs from 'dayjs';
 import { getReimbursements, submitApproval, payReimbursement } from '@/services/api';
 import { useAuthStore } from '@/stores';
 import type { ReimbursementRecord, ApprovalRecord } from '@/types';
+import { STATUS, ACTION, EXPENSE_TYPE } from '@/constants';
 
-const statusMap: Record<string, { color: string; label: string }> = {
-  draft: { color: 'default', label: '草稿' },
-  pending: { color: 'processing', label: '待审批' },
-  approved: { color: 'success', label: '已通过' },
-  rejected: { color: 'error', label: '已驳回' },
-  returned: { color: 'warning', label: '已退回' },
-  paid: { color: 'success', label: '已付款' },
-  cancelled: { color: 'default', label: '已撤销' },
-};
-
-const actionLabels: Record<string, string> = {
-  pending: '待审批', approve: '通过', reject: '驳回', return: '退回', pay: '付款', cancelled: '已取消',
-};
 
 function getCurrentStage(approvals: ApprovalRecord[]): string | null {
   const p = approvals.find((a) => a.action === 'pending');
@@ -125,14 +113,14 @@ export default function Approval() {
     { title: '单号', dataIndex: 'id', key: 'id', width: 100, render: (v: string) => v.slice(0, 8) + '...' },
     { title: '申请人', dataIndex: 'user_name', key: 'user_name', width: 80 },
     { title: '部门', dataIndex: 'department', key: 'department', width: 90 },
-    { title: '类型', dataIndex: 'expense_type', key: 'expense_type', width: 70, render: (v: string) => ({ travel: '差旅', entertainment: '招待', office: '办公', other: '其他' }[v] || v) },
+    { title: '类型', dataIndex: 'expense_type', key: 'expense_type', width: 70, render: (v: string) => (EXPENSE_TYPE[v] || v) },
     {
       title: '金额', dataIndex: 'total_amount', key: 'total_amount', width: 120,
       render: (v: number) => <span style={{ fontWeight: 600, color: '#1677ff' }}>¥{v.toLocaleString()}</span>,
     },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 80,
-      render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label || s}</Tag>,
+      render: (s: string) => <Tag color={STATUS[s]?.color}>{STATUS[s]?.label || s}</Tag>,
     },
     {
       title: '当前阶段', dataIndex: 'approvals', key: 'stage', width: 110,
@@ -195,13 +183,13 @@ export default function Approval() {
                 <Descriptions.Item label="申请人">{selected.user_name}</Descriptions.Item>
                 <Descriptions.Item label="部门">{selected.department}</Descriptions.Item>
                 <Descriptions.Item label="费用类型">
-                  <Tag>{({ travel: '差旅', entertainment: '招待', office: '办公', other: '其他' })[selected.expense_type] || selected.expense_type}</Tag>
+                  <Tag>{EXPENSE_TYPE[selected.expense_type] || selected.expense_type}</Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label="金额">
                   <span style={{ fontWeight: 600, color: '#1677ff', fontSize: 16 }}>¥{selected.total_amount.toLocaleString()}</span>
                 </Descriptions.Item>
                 <Descriptions.Item label="状态">
-                  <Tag color={statusMap[selected.status]?.color}>{statusMap[selected.status]?.label || selected.status}</Tag>
+                  <Tag color={STATUS[selected.status]?.color}>{STATUS[selected.status]?.label || selected.status}</Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label="发票数">{selected.invoice_count}</Descriptions.Item>
                 <Descriptions.Item label="说明" span={2}>{selected.description || '-'}</Descriptions.Item>
@@ -258,7 +246,7 @@ export default function Approval() {
                         description: (
                           <div>
                             <Tag color={isPending ? 'processing' : isApprove ? 'success' : isReject ? 'error' : isPay ? 'blue' : 'default'}>
-                              {actionLabels[a.action] || a.action}
+                              {ACTION[a.action]?.label || a.action}
                             </Tag>
                             {a.comment && <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>{a.comment}</div>}
                             {a.acted_at && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{dayjs(a.acted_at).format('MM-DD HH:mm')}</div>}

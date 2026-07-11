@@ -8,10 +8,7 @@ import {
 } from '@ant-design/icons';
 import { getReimbursements, getReimbursement, generateReimbPdf, sendReimbEmail } from '@/services/api';
 import type { ReimbursementRecord } from '@/types';
-
-const statusLabels: Record<string, string> = { pending: '待审批', approved: '已通过', rejected: '已驳回', returned: '已退回', paid: '已付款' };
-const statusColors: Record<string, string> = { pending: 'processing', approved: 'success', rejected: 'error', returned: 'warning', paid: 'blue' };
-const typeLabels: Record<string, string> = { travel: '差旅费', entertainment: '招待费', office: '办公用品', other: '其他费用' };
+import { STATUS, ACTION, EXPENSE_TYPE } from '@/constants';
 
 function resolveUrl(url: string): string {
   if (!url) return '';
@@ -88,7 +85,7 @@ export default function DocumentCenter() {
     if (!search) return true;
     const kw = search.toLowerCase();
     return r.id.includes(kw) || r.department.includes(kw) || r.user_name.includes(kw)
-      || (typeLabels[r.expense_type] || '').includes(kw);
+      || (EXPENSE_TYPE[r.expense_type] || '').includes(kw);
   });
 
   const invoiceColumns = [
@@ -149,13 +146,13 @@ export default function DocumentCenter() {
                         <div style={{ fontWeight: 700, fontSize: 14, color: '#1677ff' }}>
                           ¥{r.total_amount.toLocaleString()}
                         </div>
-                        <Tag color={statusColors[r.status]} style={{ marginTop: 2 }}>
-                          {statusLabels[r.status] || r.status}
+                        <Tag color={STATUS[r.status]?.color} style={{ marginTop: 2 }}>
+                          {STATUS[r.status]?.label || r.status}
                         </Tag>
                       </Col>
                     </Row>
                     <div style={{ marginTop: 6 }}>
-                      <Tag>{typeLabels[r.expense_type] || r.expense_type}</Tag>
+                      <Tag>{EXPENSE_TYPE[r.expense_type] || r.expense_type}</Tag>
                       <span style={{ fontSize: 12, color: '#999' }}>{r.invoice_count} 张发票</span>
                       {r.need_special_approval && (
                         <Tag color="red" style={{ marginLeft: 4 }}>特殊审批</Tag>
@@ -175,7 +172,7 @@ export default function DocumentCenter() {
           title="报销单详情"
           size="small"
           style={{ height: '100%', overflow: 'auto' }}
-          extra={selected ? <Tag>{statusLabels[selected.status] || selected.status}</Tag> : null}
+          extra={selected ? <Tag color={STATUS[selected.status]?.color}>{STATUS[selected.status]?.label || selected.status}</Tag> : null}
         >
           <Spin spinning={detailLoading}>
             {!selected ? (
@@ -190,7 +187,7 @@ export default function DocumentCenter() {
                   <Descriptions.Item label="部门">{selected.department}</Descriptions.Item>
                   <Descriptions.Item label="申请人">{selected.user_name}</Descriptions.Item>
                   <Descriptions.Item label="费用类型">
-                    <Tag>{typeLabels[selected.expense_type] || selected.expense_type}</Tag>
+                    <Tag>{EXPENSE_TYPE[selected.expense_type] || selected.expense_type}</Tag>
                   </Descriptions.Item>
                   <Descriptions.Item label="报销金额">
                     <span style={{ fontWeight: 600, color: '#1677ff' }}>¥{selected.total_amount.toLocaleString()}</span>
@@ -233,8 +230,8 @@ export default function DocumentCenter() {
                     {selected.approvals.map((a, i) => (
                       <div key={a.id || i} style={{ marginBottom: 8, padding: '8px 12px', background: '#fafafa', borderRadius: 6 }}>
                         <Space>
-                          <Tag color={a.action === 'approve' ? 'success' : a.action === 'reject' ? 'error' : 'warning'}>
-                            {a.action === 'approve' ? '通过' : a.action === 'reject' ? '驳回' : '退回'}
+                          <Tag color={ACTION[a.action]?.color}>
+                            {ACTION[a.action]?.label || a.action}
                           </Tag>
                           <span style={{ fontWeight: 500 }}>{a.approver}</span>
                           <span style={{ color: '#999', fontSize: 12 }}>{a.acted_at || '-'}</span>
