@@ -593,40 +593,66 @@ async def submit_reimbursement(reimb_id: str = "") -> dict:
 
 
 # =============================================================================
-# 8. 为已有报销单生成 PDF
+# 8. 为报销单生成 PDF（支持草稿预览，可反复生成）
 # =============================================================================
 @tool
-async def generate_reimbursement_pdf_doc(reimb_id: str) -> dict:
-    """为一张【已存在】的报销单生成结构化报销单 PDF 并返回下载地址。
-    需提供报销单号 reimb_id。权限：员工仅本人、经理仅本部门。"""
+async def generate_reimbursement_pdf_doc(reimb_id: str = "") -> dict:
+    """生成报销单 PDF。既可用于【草稿预览】，也可用于已提交单据。
+
+    - reimb_id 留空 → 取当前用户【最近一张草稿】，生成【预览版】PDF 供用户查看确认。
+      这是"给我生成 PDF 预览"场景的默认用法。
+    - 草稿阶段可【反复生成】：用户看后若不满意，先协助其修改明细（add/update/remove_expense_item），
+      再调用本工具重新生成预览；用户彻底满意确认后，才调用 submit_reimbursement 提交。
+    - 也可传具体 reimb_id 为任意已存在报销单生成 PDF。
+    权限：员工仅本人、经理仅本部门。返回的下载地址必须原样提供给用户，绝不改写或编造。"""
     from app.core.database import AsyncSessionLocal
-    from app.services.reimbursement_svc import ReimbursementService
+    from app.services.expense_sheet_svc import ExpenseSheetService
     from app.services.pdf_svc import generate_and_store_reimbursement_pdf
     from app.core.exceptions import ReimbursementNotFoundError
 
     c = _ctx()
     uid, role, dept = c.get("user_id", ""), c.get("user_role", ""), c.get("user_department", "")
     async with AsyncSessionLocal() as db:
-        svc = ReimbursementService(db)
-        try:
-            reimb = await svc.get_by_id(reimb_id)
-        except ReimbursementNotFoundError:
-            return {"success": False, "message": f"未找到报销单 {reimb_id}"}
+        svc = ExpenseSheetService(db)
+        if not reimb_id:
+            reimb = await svc.find_active_draft(uid)
+            if not reimb:
+                return {"success": False,
+                        "message": "当前没有进行中的报销单草稿可生成 PDF，请先创建并填写草稿。"}
+        else:
+            try:
+                reimb = await svc.get(reimb_id)
+            except ReimbursementNotFoundError:
+                return {"success": False, "message": f"未找到报销单 {reimb_id}"}
         if role == "employee" and reimb.user_id != uid:
             return {"success": False, "message": "只能为本人的报销单生成 PDF"}
         if role == "manager" and reimb.department != dept:
             return {"success": False, "message": f"只能为本部门（{dept}）的报销单生成 PDF"}
+        rid, status = reimb.id, reimb.status
         try:
             info = await generate_and_store_reimbursement_pdf(reimb)
         except Exception as e:
             logger.error(f"生成报销单 PDF 失败: {e}")
             return {"success": False, "message": "报销单 PDF 生成失败，请稍后重试。"}
+
     _url = info.get("download_url", "")
-    return {"success": True, "reimb_id": reimb_id,
-            "pdf_download_url": _url,
-            "message": (f"报销单 PDF 已生成，下载地址：{_url}（请原样提供给用户，勿改写或编造）。"
-                        if _url else
-                        "报销单 PDF 已生成，可在系统「文档中心」下载（本次无下载地址，请勿编造链接）。")}
+    is_draft = (status == "draft")
+    if is_draft:
+        msg = (
+            f"已生成【预览版】报销单 PDF（草稿，尚未提交）：{_url}（请原样展示给用户）。"
+            "请让用户查看：若满意，再调用 submit_reimbursement 提交；"
+            "若需修改，请先协助调整明细后【重新生成预览】。切勿在用户明确确认前提交。"
+            if _url else
+            "预览版报销单 PDF 已生成，可在系统「文档中心」下载（本次无下载地址，请勿编造链接）。"
+        )
+    else:
+        msg = (
+            f"报销单 PDF 已生成，下载地址：{_url}（请原样提供给用户，勿改写或编造）。"
+            if _url else
+            "报销单 PDF 已生成，可在系统「文档中心」下载（本次无下载地址，请勿编造链接）。"
+        )
+    return {"success": True, "reimb_id": rid, "is_draft": is_draft,
+            "pdf_download_url": _url, "message": msg}
 
 
 # =============================================================================
