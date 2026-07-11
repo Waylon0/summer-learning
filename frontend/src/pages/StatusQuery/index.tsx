@@ -122,6 +122,16 @@ export default function StatusQuery() {
   return (
     <div>
       <Card style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 12]} align="middle" style={{ marginBottom: 12 }}>
+          <Col flex="none">
+            <Segmented
+              options={statusFilters}
+              value={filter}
+              onChange={(v) => setFilter(v as string)}
+            />
+          </Col>
+          <Col flex="auto" />
+        </Row>
         <Row gutter={[16, 12]} align="middle">
           <Col>
             <Space>
@@ -139,13 +149,6 @@ export default function StatusQuery() {
             </Space>
           </Col>
           <Col flex="auto" />
-          <Col>
-            <Segmented
-              options={statusFilters}
-              value={filter}
-              onChange={(v) => setFilter(v as string)}
-            />
-          </Col>
           <Col>
             <DatePicker.RangePicker
               value={dateRange as [dayjs.Dayjs | null, dayjs.Dayjs | null]}
@@ -223,21 +226,22 @@ export default function StatusQuery() {
           ) : (
             <Table
               dataSource={records}
+              style={{ width: '100%' }}
               columns={[
-                { title: '报销单号', dataIndex: 'id', key: 'id', width: 110, render: (v: string) => v.slice(0, 8) + '...' },
-                { title: '申请人', dataIndex: 'user_name', key: 'user_name', width: 90 },
-                { title: '部门', dataIndex: 'department', key: 'department', width: 90 },
-                { title: '费用类型', dataIndex: 'expense_type', key: 'expense_type', width: 90 },
+                { title: '报销单号', dataIndex: 'id', key: 'id', width: 140, render: (v: string) => v.slice(0, 8) + '...' },
+                { title: '申请人', dataIndex: 'user_name', key: 'user_name', width: 100 },
+                { title: '部门', dataIndex: 'department', key: 'department', width: 100 },
+                { title: '费用类型', dataIndex: 'expense_type', key: 'expense_type', width: 100 },
                 {
-                  title: '金额', dataIndex: 'total_amount', key: 'total_amount', width: 120,
+                  title: '金额', dataIndex: 'total_amount', key: 'total_amount', width: 130,
                   render: (v: number) => <span style={{ fontWeight: 600 }}>¥{v.toLocaleString()}</span>,
                 },
                 {
-                  title: '状态', dataIndex: 'status', key: 'status', width: 80,
+                  title: '状态', dataIndex: 'status', key: 'status', width: 90,
                   render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label}</Tag>,
                 },
                 {
-                  title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170,
+                  title: '创建时间', dataIndex: 'created_at', key: 'created_at', flex: 1,
                   render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-',
                 },
               ]}

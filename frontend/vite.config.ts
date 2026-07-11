@@ -16,6 +16,10 @@ export default defineConfig({
         target: 'http://26.14.184.149:8000',
         changeOrigin: true,
       },
+      '/health': {
+        target: 'http://26.14.184.149:8000',
+        changeOrigin: true,
+      },
     },
   },
 });
