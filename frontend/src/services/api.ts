@@ -242,6 +242,11 @@ export async function updateUserRole(userId: string, role: string): Promise<User
   return res.data;
 }
 
+export async function updateUserEmail(userId: string, email: string): Promise<UserInfo> {
+  const res = await api.put<UserInfo>(`/admin/users/${userId}/email`, { email });
+  return res.data;
+}
+
 // ========== 费用统计 ==========
 
 export async function getTrend(params?: { months?: number; department?: string }): Promise<TrendResponse> {

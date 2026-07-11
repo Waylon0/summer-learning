@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Button, Modal, Select, message, Space, Spin } from 'antd';
-import { TeamOutlined, ReloadOutlined, CrownOutlined } from '@ant-design/icons';
-import { listUsers, updateUserRole } from '@/services/api';
+import { Card, Table, Tag, Button, Modal, Select, Input, message, Space, Spin } from 'antd';
+import { TeamOutlined, ReloadOutlined, CrownOutlined, MailOutlined } from '@ant-design/icons';
+import { listUsers, updateUserRole, updateUserEmail } from '@/services/api';
 import type { UserInfo } from '@/types';
 
 const roleMap: Record<string, { color: string; label: string }> = {
@@ -25,6 +25,10 @@ export default function UserManagement() {
   const [selectedUser, setSelectedUser] = useState<UserInfo | null>(null);
   const [newRole, setNewRole] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [emailUser, setEmailUser] = useState<UserInfo | null>(null);
+  const [newEmail, setNewEmail] = useState('');
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -62,6 +66,31 @@ export default function UserManagement() {
     setSubmitting(false);
   };
 
+  const handleEditEmail = (user: UserInfo) => {
+    setEmailUser(user);
+    setNewEmail(user.email || '');
+    setEmailModalOpen(true);
+  };
+
+  const handleEmailSubmit = async () => {
+    if (!emailUser) return;
+    const trimmed = newEmail.trim();
+    if (trimmed && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed)) {
+      message.error('邮箱格式不正确');
+      return;
+    }
+    setEmailSubmitting(true);
+    try {
+      await updateUserEmail(emailUser.id, trimmed);
+      message.success(trimmed ? `${emailUser.name} 邮箱已更新` : `${emailUser.name} 邮箱已清空`);
+      setEmailModalOpen(false);
+      fetchUsers();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '操作失败');
+    }
+    setEmailSubmitting(false);
+  };
+
   const columns = [
     { title: '用户名', dataIndex: 'username', key: 'username', width: 120 },
     { title: '姓名', dataIndex: 'name', key: 'name', width: 100 },
@@ -80,16 +109,27 @@ export default function UserManagement() {
       render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',
     },
     {
-      title: '操作', key: 'actions', width: 160,
+      title: '操作', key: 'actions', width: 220,
       render: (_: unknown, record: UserInfo) => (
-        <Button
-          type="link"
-          icon={<CrownOutlined />}
-          onClick={() => handlePromote(record)}
-          disabled={record.role === 'admin'}
-        >
-          {record.role === 'admin' ? '已是最高' : '变更角色'}
-        </Button>
+        <Space>
+          <Button
+            type="link"
+            icon={<CrownOutlined />}
+            onClick={() => handlePromote(record)}
+            disabled={record.role === 'admin'}
+            style={{ padding: '4px 4px' }}
+          >
+            {record.role === 'admin' ? '已是最高' : '角色'}
+          </Button>
+          <Button
+            type="link"
+            icon={<MailOutlined />}
+            onClick={() => handleEditEmail(record)}
+            style={{ padding: '4px 4px' }}
+          >
+            邮箱
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -131,6 +171,33 @@ export default function UserManagement() {
           onChange={setNewRole}
           options={roleOptions}
         />
+      </Modal>
+
+      <Modal
+        title="编辑用户邮箱"
+        open={emailModalOpen}
+        onOk={handleEmailSubmit}
+        onCancel={() => setEmailModalOpen(false)}
+        confirmLoading={emailSubmitting}
+        okText="保存"
+        cancelText="取消"
+      >
+        {emailUser && (
+          <div style={{ marginBottom: 16 }}>
+            <p><strong>用户：</strong>{emailUser.name}（{emailUser.username}）</p>
+            <p><strong>部门：</strong>{emailUser.department}</p>
+            <p><strong>角色：</strong><Tag color={roleMap[emailUser.role]?.color}>{roleMap[emailUser.role]?.label}</Tag></p>
+          </div>
+        )}
+        <div style={{ marginBottom: 4, fontSize: 13, color: '#666' }}>邮箱地址（用于接收审批通知）</div>
+        <Input
+          placeholder="请输入邮箱，例如 manager@company.com"
+          value={newEmail}
+          onChange={(e) => setNewEmail(e.target.value)}
+          allowClear
+          onPressEnter={handleEmailSubmit}
+        />
+        <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>留空表示清空邮箱，该用户将不再接收邮件通知。</div>
       </Modal>
     </Card>
   );
