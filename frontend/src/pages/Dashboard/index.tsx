@@ -10,6 +10,8 @@ export default function Dashboard() {
   const [trend, setTrend] = useState<TrendResponse | null>(null);
   const [personal, setPersonal] = useState<PersonalStatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sortAsc, setSortAsc] = useState(false);
+  const [tableSortMode, setTableSortMode] = useState<'amount' | 'rate'>('amount');
   const ringRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const trendRef = useRef<HTMLDivElement>(null);
@@ -199,24 +201,26 @@ export default function Dashboard() {
         <Row gutter={16} style={{ marginBottom: 24 }}>
           <Col span={24}>
             <Card size="small">
-              <Row gutter={32}>
-                <Col>
+              <div style={{ display: 'flex', width: '100%' }}>
+                <div style={{ flex: 1, textAlign: 'center' }}>
                   <span style={{ color: '#999', fontSize: 13 }}>本月：</span>
                   <span style={{ fontWeight: 600 }}>{personal.current_month.count} 笔</span>
                   <span style={{ marginLeft: 8, fontWeight: 600, color: '#1677ff' }}>¥{personal.current_month.total.toLocaleString()}</span>
-                </Col>
-                <Col>
+                </div>
+                <div style={{ flex: 1, textAlign: 'center' }}>
                   <span style={{ color: '#999', fontSize: 13 }}>上月：</span>
                   <span style={{ fontWeight: 600 }}>{personal.last_month.count} 笔</span>
                   <span style={{ marginLeft: 8, fontWeight: 600, color: '#1677ff' }}>¥{personal.last_month.total.toLocaleString()}</span>
-                </Col>
-                <Col>
+                </div>
+                <div style={{ flex: 1, textAlign: 'center' }}>
                   <span style={{ color: '#999', fontSize: 13 }}>待审批：</span>
                   <span style={{ fontWeight: 600, color: '#faad14' }}>{personal.status_breakdown?.pending || 0} 笔</span>
-                  <span style={{ marginLeft: 8, color: '#999', fontSize: 13 }}>已通过：</span>
+                </div>
+                <div style={{ flex: 1, textAlign: 'center' }}>
+                  <span style={{ color: '#999', fontSize: 13 }}>已通过：</span>
                   <span style={{ fontWeight: 600, color: '#52c41a' }}>{personal.status_breakdown?.approved || 0} 笔</span>
-                </Col>
-              </Row>
+                </div>
+              </div>
             </Card>
           </Col>
         </Row>
@@ -225,10 +229,10 @@ export default function Dashboard() {
       <Card
         title={<Space><TrophyOutlined /> 部门费用排行</Space>}
         style={{ marginBottom: 24 }}
-        extra={<span style={{ fontSize: 12, color: '#999' }}>按已使用金额降序</span>}
+        extra={<span style={{ fontSize: 12, color: '#999', cursor: 'pointer' }} onClick={() => setSortAsc(!sortAsc)}>{sortAsc ? '按已使用金额升序' : '按已使用金额降序'}</span>}
       >
         <Row gutter={[16, 12]}>
-          {[...budgets].sort((a, b) => b.used_amount - a.used_amount).map((b, i) => (
+          {[...budgets].sort((a, b) => sortAsc ? a.used_amount - b.used_amount : b.used_amount - a.used_amount).map((b, i) => (
             <Col span={i === 0 ? 8 : 4} key={b.id}>
               <Card size="small" style={{ textAlign: 'center', background: b.usage_rate > 90 ? '#fff2f0' : i === 0 ? '#f6ffed' : '#fafafa', border: b.usage_rate > 90 ? '1px solid #ffccc7' : undefined }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
@@ -272,8 +276,11 @@ export default function Dashboard() {
         </Col>
       </Row>
 
-      <Card title="部门预算详情">
-        <Table dataSource={budgets} columns={columns} rowKey="id" pagination={false} size="middle" />
+      <Card
+        title="部门预算详情"
+        extra={<span style={{ fontSize: 12, color: '#999', cursor: 'pointer' }} onClick={() => setTableSortMode(m => m === 'amount' ? 'rate' : 'amount')}>{tableSortMode === 'amount' ? '按已使用金额降序' : '按使用率降序'}</span>}
+      >
+        <Table dataSource={[...budgets].sort((a, b) => tableSortMode === 'amount' ? b.used_amount - a.used_amount : b.usage_rate - a.usage_rate)} columns={columns} rowKey="id" pagination={false} size="middle" />
       </Card>
     </div>
   );
