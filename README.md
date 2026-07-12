@@ -143,5 +143,7 @@ ReimburseAgent/
 │       └── types/                  # TypeScript 类型
 └── docs/
     ├── DESIGN.md               # 需求分析与架构设计文档（合并版）
-    └── API.md                  # REST API 详细说明
+    ├── API.md                  # REST API 详细说明
+    ├── ACCEPTANCE.md           # 项目结题验收文档
+    └── OPTIMIZATION_LOG.md     # 优化实况台账（含验证记录）
 ```
